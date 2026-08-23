@@ -1,0 +1,21 @@
+[package]
+name = "cosync-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+# Mobile FFI bindings (Rust -> Kotlin). Kept behind a feature flag so the
+# desktop (Tauri) build doesn't pull this in at all.
+uniffi = { version = "0.25", optional = true }
+
+[build-dependencies]
+uniffi = { version = "0.25", features = ["build"], optional = true }
+
+[features]
+mobile-bindings = ["dep:uniffi"]
