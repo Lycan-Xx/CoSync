@@ -74,3 +74,22 @@ fingerprint model (see `localsend/protocol`) validated the pairing
 design already planned for Milestone 2. Their documented Android
 `saf_stream` performance issue is worth knowing about before Milestone 6
 (File Transfer).
+
+---
+
+## ADR-004: Version pins in Cargo.lock reflect the CI/sandbox toolchain, not a project constraint
+
+**Status:** Accepted, revisit on your own machine
+
+**Context:** Several crates (`ed25519-dalek`, `indexmap`, `zeroize`,
+`base64ct`, `tempfile`) are pinned to older-than-latest versions in
+`Cargo.lock`. This is *not* a deliberate architecture choice — it's
+because the sandbox this milestone was built in only had Rust 1.75
+(2023) available via `apt`, and the current versions of those crates
+require newer `rustc` (1.78–1.86 depending on the crate).
+
+**Action for you:** On your own machine, install Rust via `rustup`
+(not your OS package manager) so you're on a current stable toolchain,
+then run `cargo update` to pick up the latest compatible versions of
+everything. Nothing in the code depends on the old versions — this is
+purely a toolchain artifact of where Milestone 1 happened to be built.

@@ -1,0 +1,68 @@
+syntax = "proto3";
+package cosync;
+
+// Every message on the wire is an Envelope. `device_id`, `logical_time`,
+// and `physical_time_ms` together form the Hybrid Logical Clock timestamp
+// (see src/hlc.rs) used for causal ordering and loop prevention across
+// every feature (clipboard, files, notifications, ...).
+message Envelope {
+  string device_id = 1;         // the device that produced this envelope
+  uint64 logical_time = 2;      // HLC logical counter
+  uint64 physical_time_ms = 3;  // HLC physical component (unix ms)
+
+  oneof payload {
+    PairingRequest pairing_request = 10;
+    ClipboardUpdate clipboard_update = 11;
+    FileMeta file_meta = 12;
+    FileChunk file_chunk = 13;
+    Heartbeat heartbeat = 14;
+    Ack ack = 15;
+  }
+}
+
+// Sent once, immediately after the QUIC tunnel is established following a
+// QR scan, to complete the pairing handshake (Milestone 2).
+message PairingRequest {
+  string device_name = 1;
+  string public_key_fingerprint = 2;
+  string pairing_token = 3;
+}
+
+// A clipboard change (Milestone 5). `source_device_id` is redundant with
+// the Envelope's `device_id` today, but kept explicit on the payload
+// itself so loop-prevention logic never has to reach into the envelope
+// wrapper to do its job.
+message ClipboardUpdate {
+  string source_device_id = 1;
+  bytes content = 2;
+  string content_type = 3; // e.g. "text/plain", "text/uri-list"
+}
+
+// Sent before a file transfer begins (Milestone 6).
+message FileMeta {
+  string transfer_id = 1;
+  string filename = 2;
+  uint64 size_bytes = 3;
+  string sha256 = 4;
+  uint32 chunk_count = 5;
+}
+
+// One chunk of a file transfer (Milestone 6). Chunk size is a sender-side
+// concern (spec calls for 64KB), not encoded here.
+message FileChunk {
+  string transfer_id = 1;
+  uint32 chunk_index = 2;
+  bytes data = 3;
+}
+
+// Keep-alive / liveness ping. No fields — the Envelope's HLC timestamp is
+// the payload.
+message Heartbeat {}
+
+// Generic acknowledgement, used for pairing confirmation, file-chunk
+// receipt (enabling resume, Milestone 6), and error reporting.
+message Ack {
+  string ref_id = 1;   // id of the thing being acknowledged (transfer_id, etc.)
+  bool success = 2;
+  string error = 3;    // empty when success is true
+}
