@@ -1,0 +1,43 @@
+name: CoSync Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build Windows desktop
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable MSVC Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '27.1'
+
+      - name: Show toolchain versions
+        run: |
+          rustc --version --verbose
+          cargo --version
+          protoc --version
+
+      - name: Run core tests
+        run: cargo test -p cosync-core
+
+      - name: Build desktop backend
+        run: cargo build -p desktop --verbose
+
