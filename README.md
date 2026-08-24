@@ -1,3 +1,5 @@
+[![CoSync Build](https://github.com/Lycan-Xx/CoSync/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Lycan-Xx/CoSync/actions/workflows/build.yml)
+
 # CoSync
 
 A cross-platform device mesh: clipboard, files, and phone accessibility
