@@ -67,6 +67,7 @@ jobs:
         with:
           tag_name: v${{ steps.app-version.outputs.version }}-build.${{ github.run_number }}
           name: CoSync v${{ steps.app-version.outputs.version }} build ${{ github.run_number }}
+          body_path: CHANGELOG.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
