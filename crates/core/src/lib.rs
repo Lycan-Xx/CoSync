@@ -6,9 +6,14 @@
 //! (`identity`), and the pairing QR payload (`pairing`). No networking
 //! yet; that starts in Milestone 2.
 
+pub mod cert;
+pub mod discovery;
 pub mod hlc;
 pub mod identity;
+pub mod paired_devices;
 pub mod pairing;
+pub mod transport;
+pub mod verifier;
 
 /// Generated from `proto/cosync.proto` by `build.rs` (prost-build).
 pub mod proto {
@@ -16,9 +21,13 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/cosync.rs"));
 }
 
+pub use cert::DeviceCertificate;
+pub use discovery::{Discovery, DiscoveredPeer};
 pub use hlc::{should_apply_update, HlcTimestamp, HybridLogicalClock};
 pub use identity::{default_app_data_dir, DeviceIdentity, IdentityError};
+pub use paired_devices::{PairedDevice, PairedDeviceStore};
 pub use pairing::PairingPayload;
+pub use transport::Session;
 
 #[cfg(test)]
 mod envelope_tests {

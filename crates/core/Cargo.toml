@@ -28,6 +28,23 @@ directories = "5"
 
 thiserror = "1"
 
+# Certificate expiry (used only in cert.rs)
+time = "0.3"
+
+# Discovery (Milestone 2)
+mdns-sd = "0.10"
+
+# Transport (Milestone 2): QUIC over TLS 1.3 with a pinned self-signed cert
+# (no CA — see ADR-003/ADR-005). Older 0.10/0.21 line chosen deliberately
+# for MSRV reasons — see ADR-004.
+quinn = "0.10"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+rcgen = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+
+# Paired-device persistence (Milestone 2's paired_devices table)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 # Mobile FFI bindings (Rust -> Kotlin). Kept behind a feature flag so the
 # desktop (Tauri) build doesn't pull this in at all.
 uniffi = { version = "0.25", optional = true }

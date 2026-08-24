@@ -93,3 +93,34 @@ require newer `rustc` (1.78–1.86 depending on the crate).
 then run `cargo update` to pick up the latest compatible versions of
 everything. Nothing in the code depends on the old versions — this is
 purely a toolchain artifact of where Milestone 1 happened to be built.
+
+---
+
+## ADR-005: Certificate fingerprint pinning, not raw-Ed25519-key pinning
+
+**Status:** Accepted (refines ADR-003's pairing model)
+
+**Decision:** The value pinned for peer trust — embedded in the pairing
+QR code, checked on every handshake — is the SHA-256 fingerprint of the
+device's self-signed X.509 certificate (`cert.rs`), not a fingerprint of
+the raw Ed25519 key from `identity.rs` (Milestone 1).
+
+**Reasoning:** This is the standard "TLS certificate fingerprint
+pinning" shape (the same one LocalSend uses, per ADR-003's research) and
+maps directly onto rustls's `ServerCertVerifier`/`ClientCertVerifier`
+traits, which operate on certificates, not raw keys. `DeviceIdentity`
+(Ed25519) remains available for any future signing/verification need
+that isn't the TLS layer itself; `DeviceCertificate` is a separate,
+purpose-built identity for the transport.
+
+**Real bug this caught:** while testing this, a test asserting "an
+unpinned client certificate must be rejected" initially appeared to
+fail — the attacker's connection looked accepted. It wasn't a security
+bug: TLS 1.3's client-auth handshake lets the *dialer's* side resolve
+before the server finishes validating the client cert (client
+certificate is the second handshake flight), so `connect().await`
+returning `Ok` doesn't by itself prove acceptance. The fix was in the
+test (wait on `connection.closed()` to observe the server's actual
+verdict), not in `verifier.rs`. Documented here because it's a subtlety
+worth remembering before trusting any future "did the handshake
+succeed?" check that doesn't account for it.
