@@ -13,6 +13,10 @@ notification mirroring, quick replies from the desktop, and (further out)
 using your phone's camera as a PC webcam — all over a direct, encrypted,
 device-to-device connection.
 
+## Philosoph
+
+Cosync should not look like just another application that manages device synchronization. It should make device synchronization feel like part of the operating system.
+
 **Priority order:** Android → Windows first, Linux second, iOS only if
 real demand shows up. macOS is intentionally out of scope — see
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
