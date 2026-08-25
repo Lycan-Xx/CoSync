@@ -1,263 +1,818 @@
-# Cosync — Development Specification
+# Cosync — Development Specification (v2)
 
 ## How to Use This Document
 
-Each milestone below is self-contained: **Goal → Prerequisites → Implementation Steps → Acceptance Criteria → Context Handoff**. Hand a single milestone to a developer (human or AI coding agent) as their task brief. Don't move to the next milestone until the current one's Acceptance Criteria pass. The Context Handoff section at the end of each milestone is what the *next* milestone assumes exists — read it before starting the next phase, whether you're a human re-onboarding after a break or an AI agent picking up mid-project with no memory of earlier sessions.
+Each milestone is self-contained: **Goal → Prerequisites → Iterations
+→ Acceptance Criteria → Context Handoff**. Hand one milestone to a
+developer or AI agent at a time. Never start the next milestone until
+the current one's Acceptance Criteria pass.
 
-This spec supersedes earlier drafts in two ways, based on decisions made along the way:
-- **Mobile stack is React Native (Expo), not Flutter.** No Flutter experience on the team; React Native/Expo is the known quantity.
-- **macOS is explicitly out of scope.** LinkMyMac already owns that lane well. Cosync's target is Android → Windows first, Linux second, iOS only if demand materializes later.
-- **Virtual webcam/mic/SMS/calls (Milestone 10) are deferred by design**, not forgotten — they're the highest-risk, highest-effort features and shouldn't be started until the core product is a genuinely reliable daily driver.
+**The iteration model:** Every feature follows three passes. Don't
+skip ahead. Don't polish before it works. Don't make it pretty before
+it's correct.
+
+```
+Iteration 1 — Functional:   it works, wiring is real, UI is minimal
+Iteration 2 — Designed:     matches the design system, looks right
+Iteration 3 — Polished:     keyboard nav, animations, edge cases, a11y
+```
+
+Each milestone specifies which iterations are in scope. Iterations
+not listed are deferred.
+
+**What was decided along the way:**
+- Mobile: React Native (Expo bare workflow), not Flutter
+- macOS: explicitly out of scope (LinkMyMac already owns it)
+- No cloud relay of any kind, ever
+- Virtual webcam/mic/SMS/calls: deferred to v2.0 (Milestone 10)
+- Milestone 0–2 complete and pushed (Rust core, discovery, pairing,
+  paired-device persistence)
+- Milestone 3 Rust backend complete; React frontend not yet built
+
+---
+
+## Design System Reference
+
+Everything built from here forward must conform to this system.
+Read this before writing a single line of UI code.
+
+### Desktop Design Language
+
+**Window treatment**
+- Native OS window decorations (standard title bar with min/max/close)
+- Native desktop proportions — no full-screen, no large panels
+- Subtle 8px corners where custom rounding applies
+- Dark graphite background: approx `#1a1a1f` surface, `#222228`
+  slightly lighter panels
+- Low-contrast borders: `1px solid rgba(255,255,255,0.08)`
+- No decorative shadows, no gradients
+
+**Typography**
+- System sans-serif stack: `Segoe UI, Inter, Ubuntu Sans, sans-serif`
+- Hierarchy from size and weight only, never color
+- 12–14px inline, 20px hero labels only
+- 11–13px base text, 10px eyebrows (section labels, metadata)
+- Monospace only for device IDs, fingerprints, shortcuts, code snippets
+
+**Color & status**
+- Primary surface: `#1a1a1f`
+- Panel: `#222228`
+- Text primary: `rgba(255,255,255,0.87)`
+- Text secondary: `rgba(255,255,255,0.45)`
+- Accent blue: `#3b82f6` — used for toggles, selection, active state,
+  progress fills only
+- Green `#22c55e` dot: connected state only, never a badge
+- Amber `#f59e0b` dot: reconnecting state only
+- Gray dot: offline state
+- Red `#ef4444`: destructive actions only (Forget device, etc.)
+- Never use color to convey hierarchy — only status
+
+**Icons**
+- Fluent UI / Windows 11 line style
+- Stroke 1.4, rounded joins, no fills except status indicators
+- 16px default, 12–14px inline, 20px for section heroes
+- Icons support text labels; they never replace them
+
+**Interaction**
+- Keyboard-first: every launcher and list accepts arrow keys + Enter
+- No home screen; tray → feature directly
+- Show only relevant state; hide everything else
+- Native controls only: switches, dropdowns, context menus
+- No animated loading spinners unless a network round-trip is in
+  progress and takes >300ms
+
+**What to avoid (hard rules)**
+- No large dashboard or home page
+- No analytics or "recent activity" cards
+- No decorative gradients or oversized CTAs
+- No SaaS-style sidebar navigation outside the Settings window
+- No mobile-stretched layouts or status badges
+- No web-app design patterns: rounded hero cards, large thumbnails,
+  app-store-style feature rows
+
+### Mobile Design Language
+
+**Overall model**
+- Two pages only: Home (operational) and Control (trust/permissions)
+- Bottom nav: `Home` | `Control`
+- Most interactions happen in Android system surfaces (share sheet,
+  notification shade, quick settings) — the app itself is minimal
+
+**Visual language**
+- Background: `#0f1117` (slightly deeper than desktop)
+- Surface: `#1a1c23`
+- Card/section: `#21242d`
+- Same accent blue, same status dots as desktop
+- System sans-serif, same size scale
+
+**Home page structure (confirmed layout)**
+```
+[ App bar: Cosync logo + overflow ⋮ ]
+
+[ Connection card — large, ~45–50% initial viewport ]
+  DESKTOP-ATELIER
+  ● Connected
+  Wi-Fi · Local network
+
+[ Clipboard section ]
+  [ Search clipboard ]
+  [ list of history items ]
+
+[ Bottom nav: Home | Control ]
+```
+
+NOTE: The three trust toggle cards (Clipboard / Files / Notifications)
+that appeared in early mockups are NOT on the Home page. They live
+exclusively on the Control page. The connection card on Home should be
+large and clear. Do not add them back.
+
+**Home scrolled state**
+When the user scrolls clipboard history, the connection card collapses
+to a single compact line:
+```
+DESKTOP-ATELIER  ●  Connected · Wi-Fi · Local network
+```
+The clipboard list then has ~80% of the viewport.
+
+**Control page structure**
+```
+[ Connection card — compact ]
+
+ALLOW THIS PC TO ACCESS
+  Clipboard         [toggle]
+  Files             [toggle]
+  Notifications     [toggle]
+
+SYSTEM STATUS
+  Background access       Running normally  >
+  Battery optimization    Allowed           >
+  Notification access     Allowed           >
+
+  Received files location    Downloads/Cosync  >
+  Connection details                           >
+  Disconnect                                   >
+  Forget this PC                               >
+  About Cosync                                 >
+
+[ "Your data stays between your paired devices." ]
+```
+
+**First launch flow**
+```
+App opens → "Connect your PC" (PC icon, Scan QR button)
+→ Camera opens immediately (no permission carousel first)
+→ QR viewfinder with corner brackets
+→ Connecting screen ("Securing connection")
+→ Connected Home
+```
+No onboarding carousel. No welcome tutorial.
+
+**System surfaces to register**
+- Android share sheet target ("Send to DESKTOP-ATELIER")
+- Quick Settings tile (Connected/Disconnected, tap toggles, long-press opens app)
+- Clipboard paste notification ("Copied from DESKTOP-ATELIER — tap to paste")
+- Transfer progress notification (with Pause / Cancel)
+- Transfer complete notification (with Open / Show in Files)
+- Permission explanation modals (explain before Settings redirect, never dump
+  the user into Settings silently)
 
 ---
 
 ## Architecture Summary
 
-| Layer | Choice | Why |
-|---|---|---|
-| Shared core logic | Rust (`cosync-core` crate) | Write networking, crypto, sync logic once, share everywhere |
-| Desktop shell | Tauri v2 + React/TypeScript | Small binaries, native Rust backend, direct Rust↔JS IPC |
-| Mobile shell | React Native (Expo, **bare workflow / custom dev client**) | Matches existing RN/Expo experience |
-| Rust↔Mobile bridge | `uniffi-rs` → Kotlin bindings → thin native module → RN JS API | UniFFI doesn't emit JS directly; Kotlin is the practical middle step on Android |
-| Discovery | `mdns-sd` crate (mDNS/DNS-SD) | Cross-platform, no central server |
-| Transport | QUIC via `quinn` + `rustls` | TLS 1.3 built in, multiplexed streams, UDP resilience |
-| Pairing trust model | QR-exchanged, pinned self-signed certs (not CA-validated) | Closed pairwise trust — appropriate for a personal-device mesh |
-| Payload encoding | Protobuf via `prost` | Fast, small, versionable wire format |
-| Local storage | SQLite via `rusqlite` (bundled) | Works identically cross-compiled for Android via NDK |
+| Layer | Choice |
+|---|---|
+| Shared core logic | Rust (`cosync-core` crate) |
+| Desktop shell | Tauri v2 + React/TypeScript |
+| Mobile shell | React Native (Expo bare workflow) |
+| Rust↔Mobile bridge | `uniffi-rs` → Kotlin bindings → RN native module |
+| Discovery | `mdns-sd` crate (mDNS/DNS-SD) |
+| Transport | QUIC via `quinn` + `rustls` (TLS 1.3, pinned self-signed certs) |
+| Payload encoding | Protobuf via `prost` |
+| Local storage | SQLite via `rusqlite` (bundled) |
 
-**Critical note for the mobile team:** Expo Go (the app from the Play Store) **cannot** run this project past Milestone 0. Foreground services, `NotificationListenerService`, `AccessibilityService`, custom native modules, and JNI-linked Rust binaries all require `expo prebuild` (bare workflow) or a custom Expo Dev Client. Do not attempt to develop feature milestones inside plain Expo Go — it will silently fail to expose the native modules.
+---
 
-### Repo Layout
+## Status: What Is Already Done
 
 ```
-cosync/
-├── Cargo.toml                    # workspace root
-├── crates/
-│   └── core/                     # cosync-core: all shared Rust logic
-├── apps/
-│   ├── desktop/                  # Tauri + React
-│   │   └── src-tauri/
-│   └── mobile/                   # React Native (Expo, prebuilt/bare)
-│       └── android/
-│           └── rust-bridge/      # Kotlin module wrapping UniFFI bindings
-└── docs/
-    ├── SPEC.md                   # this document
-    └── DECISIONS.md              # architecture decision records (ADRs)
+Milestone 0 ✓  Repo scaffolding (Rust workspace, Tauri shell, RN/Expo bare)
+Milestone 1 ✓  Protocol & data model (Envelope, HLC, DeviceIdentity, PairingPayload)
+Milestone 2 ✓  Discovery & secure pairing (mDNS, QUIC mutual TLS, PairedDeviceStore)
+Milestone 3    Rust backend ✓ (AppState, commands, tray, pairing listener)
+               React frontend ✗ — this is the next thing to build
 ```
 
 ---
 
-## Milestone 0 — Environment & Repo Foundations
+## Milestone 3 — Desktop UI: Tray + Pairing (Iterations 1 & 2)
 
-**Goal:** Tooling installed, monorepo scaffolded, three empty-but-buildable shells exist. Nothing "smart" yet.
+**Goal:** Replace the default Tauri template with a real, working desktop
+UI for the two most critical surfaces: the system tray and the pairing
+window. Nothing more. Clipboard and settings come in Milestone 3b.
 
-**Prerequisites:** None.
+**Prerequisites:** Milestone 3 Rust backend (already complete).
 
-**Implementation Steps:**
-1. Create the monorepo and Cargo workspace root; add `crates/core` as the first member (`cargo new --lib crates/core --name cosync-core`).
-2. Install Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`.
-3. Install `cargo-ndk` and the Android NDK (via Android Studio's SDK Manager); set `ANDROID_NDK_HOME`.
-4. Add `uniffi` and `uniffi-build` to `cosync-core`'s `Cargo.toml` (can sit behind a `mobile-bindings` feature flag to avoid pulling UniFFI into the desktop build).
-5. Scaffold the desktop app: `npm create tauri-app@latest apps/desktop -- --template react-ts`.
-6. Scaffold the mobile app: `npx create-expo-app apps/mobile --template blank-typescript`, then run `npx expo prebuild` inside it — this generates and commits a real `android/` folder you now own and edit directly (this is the step that takes you out of Expo Go territory).
-7. Create the `apps/mobile/android/rust-bridge/` Android library module and wire it into `settings.gradle`.
-8. Create `docs/DECISIONS.md`; log ADR-001 (React Native over Flutter — no Flutter experience) and ADR-002 (macOS excluded from scope — already served by LinkMyMac).
-9. Verify: `cargo build` succeeds at the workspace root; `npm run tauri dev` opens a blank desktop window; `npx expo run:android` builds and installs a blank RN app on an emulator or device.
+**Iteration 1 — Functional (build this first)**
 
-**Acceptance Criteria:** All three shells build and launch with zero shared logic. Nothing crashes. `docs/DECISIONS.md` exists with the two ADRs above.
+Wire the real backend data to minimal React components. It must work
+correctly; it does not need to look good yet.
 
-**Context Handoff:** Three empty, buildable shells exist (`cosync-core`, Tauri desktop app, RN mobile app in bare/prebuilt form). Next milestone adds the first real logic to `cosync-core` — no networking yet, just data types.
+1. Delete the default `App.tsx` content. Create a minimal router that
+   reads the `navigate` event from Tauri (the backend already emits this)
+   and renders one of: `<PairingScreen>`, `<DeviceListScreen>`.
 
----
+2. `<PairingScreen>`: call `get_pairing_qr` → parse the JSON → render the
+   `public_key_fingerprint` and raw JSON payload as text. No QR rendering
+   yet — just confirm the data arrives. Show a "Waiting for phone..." label.
 
-## Milestone 1 — Rust Core: Protocol & Data Model Foundation
+3. `<DeviceListScreen>`: call `list_paired_devices` on mount, and re-call
+   every 2 seconds. Render a plain `<ul>` of device names and connected
+   booleans. When `paired-device-connected` fires, re-fetch and update.
 
-**Goal:** Define the wire vocabulary devices will use to talk to each other. Pure data/logic, no networking.
+4. Install `qrcode.react` (`npm install qrcode.react`). Replace the raw
+   JSON text in `<PairingScreen>` with `<QRCodeSVG value={payload} />`.
 
-**Prerequisites:** Milestone 0.
+5. Add `npm install @tauri-apps/plugin-global-shortcut` — register
+   `Ctrl+Shift+V` globally in the Rust backend as a no-op for now
+   (placeholder for Milestone 3b's clipboard history window).
 
-**Implementation Steps:**
-1. Add `prost` + `prost-build` to `cosync-core`. Create `proto/cosync.proto` defining an `Envelope` message (a `oneof` over `PairingRequest`, `ClipboardUpdate`, `FileMeta`, `FileChunk`, `Heartbeat`, `Ack`), with every variant carrying `device_id`, `logical_time`, and `physical_time_ms` for the Hybrid Logical Clock.
-2. Write `build.rs` so `prost-build` compiles the `.proto` into Rust structs at build time.
-3. Implement a `HybridLogicalClock` type in `cosync_core::hlc`: `now()`, `receive(remote_time)` (updates local clock to `max(incoming, local) + 1`), and comparison ordering. Write unit tests covering the loop-prevention rule — a device must drop any update where `source_device_id == self.device_id`.
-4. Implement `DeviceIdentity`: generates an Ed25519 keypair on first run (`ed25519-dalek` or `ring`), persists it via the `directories` crate's cross-platform app-data path.
-5. Define `PairingPayload` (what gets QR-encoded): device name, public key fingerprint, IP hint, port, one-time pairing token — serialized as JSON (small, human-debuggable; protobuf is reserved for the ongoing wire protocol, not the QR payload).
-6. Write unit tests: round-trip serialize/deserialize every `Envelope` variant; HLC ordering correctness; keypair persists correctly across a simulated restart.
+**Acceptance criteria (Iteration 1):** Tray icon appears. Clicking
+"Show pairing QR" opens a window that renders a scannable QR code
+containing real pairing data from the backend. Clicking "Paired Devices"
+shows the real device list. No crashes.
 
-**Acceptance Criteria:** `cargo test -p cosync-core` passes. No network code exists yet — everything is pure data and logic, independently testable.
+**Iteration 2 — Designed (do this second)**
 
-**Context Handoff:** `cosync-core` now exports `Envelope`, `HybridLogicalClock`, `DeviceIdentity`, and `PairingPayload`. These are the types the discovery/pairing milestone builds on.
+Apply the design system. Don't change any wiring — only styling.
 
----
+1. Set up CSS custom properties matching the design tokens above. Create
+   `src/styles/tokens.css`. Import it once in `main.tsx`.
 
-## Milestone 2 — Discovery & Secure Pairing
+2. `<PairingWindow>` styled to match the pairing mockup (Image 18):
+   - Dark `#1a1a1f` background, native window title "Cosync — pair"
+   - "THIS PC" eyebrow label (10px, secondary text)
+   - PC hostname in bold (pull from `window.__HOSTNAME__` injected by
+     the Tauri backend via `tauri::command` returning `gethostname`)
+   - QR code in a white-background rounded rectangle (`#ffffff`, 8px)
+   - "Open Cosync on your phone and scan. Keys pin here — no account,
+     no cloud." body copy
+   - LAN row: Wi-Fi icon + `_cosync._udp.local` + copy-to-clipboard icon
+   - "End-to-end encrypted local pairing" footer with shield icon
 
-**Goal:** Two devices on the same LAN find each other, exchange keys via QR, and establish a mutually authenticated QUIC tunnel. No app data flows yet — just a reliable "connected" state.
+3. Tray menu already works from the Rust side. No React component needed
+   for the tray menu itself — Tauri renders it natively. Confirm the
+   tooltip reflects connection state using the three variants from the
+   design (green dot/Connected, amber/Reconnecting, gray/Offline).
 
-**Prerequisites:** Milestone 1.
+4. `<DeviceListScreen>` minimal styled variant — just a clean list with
+   green/gray status dots. This screen is transitional; the real device
+   management lives in Settings (Milestone 3c).
 
-**Implementation Steps:**
-1. Add `mdns-sd`, `quinn`, and `rustls` to `cosync-core`.
-2. Implement a `Discovery` module: advertise a `_cosync._udp.local` mDNS service; implement a listener surfacing discovered peers as an event stream (a `tokio::sync::mpsc` channel), consumable from both the Tauri and UniFFI/Kotlin sides.
-3. **Android-specific requirement — do not skip:** before starting the mDNS listener on Android, acquire a `WifiManager.MulticastLock` and hold it for the discovery session's lifetime. Android silently drops multicast/mDNS packets without this lock; it's the single most commonly missed step in Android mDNS implementations.
-4. Implement the pairing flow: desktop generates its `PairingPayload` and renders it as a QR code (`qrcode.react` on the Tauri/React side, fed by a Tauri command). Mobile scans it via `react-native-vision-camera` plus a barcode-detection plugin, called through the native module.
-5. On scan, the mobile side dials the desktop's advertised IP:port over QUIC, presenting its own self-signed cert. Both sides pin the peer's cert fingerprint from the QR payload — this is a closed pairwise trust model, not CA validation; document this explicitly as an intentional design choice, not an oversight.
-6. Persist paired-device records (`device_id`, cert fingerprint, last-known IP) in a `paired_devices` SQLite table.
-7. Implement reconnection: on app start, scope mDNS discovery to known `device_id`s for already-paired devices; auto-reconnect QUIC when found; use exponential backoff when not found so you're not hammering the network.
+5. Set Tauri window config for the pairing window:
+   - Width: 580, height: 620, resizable: false
+   - `decorations: true` (native title bar)
+   - Center on screen when opened
 
-**Acceptance Criteria:** On two devices on the same Wi-Fi (or a desktop + Android emulator/device), pairing via QR succeeds. Killing and restarting either app re-establishes the tunnel without re-scanning.
+**Acceptance criteria (Iteration 2):** The pairing window looks like
+Image 18. Tray tooltip updates correctly on connect/disconnect.
 
-**Context Handoff:** `cosync-core` now exposes a `Session` type representing a live, authenticated connection to a specific paired device, plus `send(Envelope)` / `on_receive(callback)`. Nothing meaningful is sent over it yet — that starts in Milestone 5.
-
----
-
-## Milestone 3 — Desktop Hub Shell (Tauri)
-
-**Goal:** A real, minimal, usable desktop app — tray icon, pairing UI, live connection status. This is the "hub" the phone talks to for the rest of the project.
-
-**Prerequisites:** Milestone 2.
-
-**Implementation Steps:**
-1. Wire `cosync-core` into `apps/desktop/src-tauri` as a path dependency. Expose Tauri commands: `start_discovery()`, `get_pairing_qr()`, `list_paired_devices()`, `get_connection_status(device_id)`.
-2. Build a system tray (Tauri's tray API): icon reflects connected/disconnected state; menu offers "Show pairing QR," "Paired devices," "Quit."
-3. Build a minimal React UI: a pairing screen (renders the QR from `get_pairing_qr`) and a device list screen (live status via an event-driven or polled Tauri→JS bridge).
-4. Use Tauri's path API for the app-data directory, matching where `cosync-core` keeps its SQLite file.
-
-**Acceptance Criteria:** Launching the app shows the tray icon. Clicking it opens the pairing QR. After pairing from a phone (Milestone 2's flow), the device list shows "Connected."
-
-**Context Handoff:** The desktop shell is a real running app with tray + pairing UI. Every later desktop feature extends this app rather than starting fresh.
+**Context Handoff for 3b:** Two real, styled windows exist. The backend
+exposes `get_pairing_qr`, `list_paired_devices`, `get_connection_status`,
+and emits `paired-device-connected` and `navigate` events. The global
+shortcut `Ctrl+Shift+V` is registered but does nothing yet.
 
 ---
 
-## Milestone 4 — Android Client Shell (React Native + Rust Bridge)
+## Milestone 3b — Desktop UI: Clipboard History Window (Iterations 1 & 2)
 
-**Goal:** A real, minimal Android app wired to the same Rust core, with the mandatory foreground service in place *before* any feature work begins.
+**Goal:** The clipboard history launcher. This is a command-palette-style
+popup, not a panel inside a larger window.
 
-**Prerequisites:** Milestone 2 (core session logic exists).
+**Prerequisites:** Milestone 3 (pairing window working), Milestone 5
+(clipboard sync working). Build the UI shell now but wire it to real
+data only after Milestone 5.
 
-**Implementation Steps:**
-1. Cross-compile `cosync-core` for Android: `cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release`. Place the resulting `.so` files into `apps/mobile/android/rust-bridge/src/main/jniLibs/<abi>/`.
-2. Run `uniffi-bindgen generate --language kotlin` against `cosync-core`'s interface definition; place the generated Kotlin under `rust-bridge/src/main/java/...`.
-3. Write a thin Kotlin wrapper, `CosyncBridgeModule`, implementing React Native's `ReactContextBaseJavaModule` (classic bridge is fine to start; migrate to a Turbo Module/Codegen later if profiling demands it). Expose `startDiscovery()`, `getPairingPayload()`, `pairWithScannedPayload(json)`, and an event emitter for connection-status changes.
-4. Register the module in `MainApplication.kt`'s package list.
-5. Implement `CosyncForegroundService.kt`, hosting the Rust session/connection lifecycle. It must be started before any discovery/pairing call and shows a persistent notification ("Cosync is active"). This is non-negotiable given Android's background-kill behavior — build it now, not as an afterthought.
-6. On the TypeScript side, build a typed `NativeCosync` wrapper around `NativeModules.CosyncBridgeModule`, plus a `useCosyncConnection()` hook mirroring the desktop's connection-status pattern.
-7. Build minimal RN UI: a pairing screen (camera scan) and a "Connected to PC" status screen.
-8. Add required manifest entries: `FOREGROUND_SERVICE`, `CHANGE_WIFI_MULTICAST_STATE`, `CAMERA`, `INTERNET`, `ACCESS_NETWORK_STATE`; declare the foreground service type (e.g. `connectedDevice` or `dataSync`) — check this against the current requirement for your target SDK version, as Android's foreground-service-type rules have tightened across recent releases.
-9. On first successful pairing, prompt the user toward `Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, with clear in-app copy explaining why first (Play Store review expects this justification to be visible to the user, not just present in code).
+**Iteration 1 — Functional**
 
-**Acceptance Criteria:** Fresh install → scan the desktop's QR → foreground notification appears → status screen shows "Connected." Killing the app from Recents and reopening it reconnects automatically — this validates that Milestone 2's reconnection logic survives real Android process death, which is stricter than a desktop app quit.
+1. Add a `get_clipboard_history` Tauri command (stubbed — returns 3–5
+   hardcoded history items: text, a URL, an image filename). Wire the
+   `Ctrl+Shift+V` global shortcut to open this window.
 
-**Context Handoff:** Android now has a working native bridge to the same Rust core the desktop uses, a persistent foreground service, and a working pairing/reconnect UI. Every later mobile feature milestone adds Kotlin bridge methods + JS wrapper calls to this same pattern — don't rebuild the bridge per feature.
+2. New Tauri window: `clipboard-history`. Width: 480, height: 480,
+   frameless, `alwaysOnTop: true`, transparent background.
+
+3. `<ClipboardHistoryWindow>`:
+   - Text input, auto-focused on open
+   - Scrollable list of history items (type icon, preview text, source
+     device, timestamp)
+   - Click item → invoke `restore_clipboard_item(id)` (stubbed for now)
+   - Escape key closes the window
+
+4. Basic keyboard navigation: up/down arrows move selection, Enter
+   triggers restore on the selected item.
+
+**Iteration 2 — Designed**
+
+Apply the design to match the clipboard history mockup from the spec:
+
+```
+Clipboard history · Ctrl+Shift+V
+
+[ Search... ]                           ← auto-focused, full-width
+
+T  https://notes.local/brief/q3-sync    ← type icon (link, text, image, code)
+   This PC · 4m · Link
+
+⌨  Gate code 4821...
+   Pixel 8 · 3h · Text
+
+<> const sync = await...
+   This PC · 5h · Code
+
+────────────────────────────────
+● Pixel 8 · connected
+Enter to restore
+```
+
+- Frameless window with subtle border (1px `rgba(255,255,255,0.1)`)
+- `#1a1a1f` background, `rgba(0,0,0,0.6)` window-level backdrop blur
+  if the platform supports it (Windows 11 Mica or Acrylic via Tauri)
+- Selected row: `rgba(59,130,246,0.15)` background + left blue accent
+  border `2px solid #3b82f6`
+- Footer bar: status dot + device name + "Enter to restore" dim hint
+
+**Acceptance criteria (Iteration 2):** Window opens on shortcut, is
+keyboard navigable, closes on Escape, looks like the design. Content
+is still stubbed — real sync data wires in after Milestone 5.
 
 ---
 
-## Milestone 5 — Bidirectional Clipboard Sync
+## Milestone 3c — Desktop UI: Settings Window (Iterations 1 & 2)
 
-**Goal:** The headline feature. Copy on either device, paste correctly on the other, with no loops or corruption.
+**Goal:** The Settings window — the only traditional full-window surface
+in the desktop app. Sidebar navigation with 9 panels.
 
-**Prerequisites:** Milestones 3 and 4 (both shells exist and can exchange `Envelope`s).
+**Prerequisites:** Milestone 3 complete.
 
-**Implementation Steps:**
-1. Desktop: implement clipboard read/write via `arboard` inside `cosync-core`. **Do not poll at 20ms.** Use native change-notification where the platform provides one (Windows `AddClipboardFormatListener` via a small platform-specific module) and fall back to a modest 250ms poll only where no native hook exists (X11/Linux).
-2. Wrap outgoing clipboard changes in `Envelope::ClipboardUpdate`, tagged with the device's current HLC value and `source_device_id`.
-3. On receive, apply the loop-prevention and HLC-ordering rules from Milestone 1 — only apply the update locally if it's causally newer.
-4. Android: implement `ClipboardManager.OnPrimaryClipChangedListener` inside the foreground service (event-driven, not polled), routed through the same `Envelope::ClipboardUpdate` path via the Kotlin bridge.
-5. **Android 12+ restriction:** background clipboard *writes* originating from a PC update require visible user acknowledgment. Implement a heads-up notification with a "Paste" action rather than attempting a silent background write, which the OS blocks.
-6. Enforce a protocol-level size cap (e.g., 5MB) on clipboard payloads; reject/truncate oversized items with a clear error in both UIs.
-7. Add a small in-memory ring buffer of recent updates to collapse duplicate rapid-fire clipboard events from the same source (several apps fire multiple clipboard writes per user copy action).
+**Iteration 1 — Functional**
 
-**Acceptance Criteria:** Copying text on the phone appears in the PC clipboard within ~1 second. Copying on PC shows a paste-confirmation bubble on the phone; tapping it pastes correctly. Rapid alternating copies on both devices don't loop or ping-pong.
+1. New Tauri window: `settings`. Width: 740, height: 560, resizable.
+   Open from tray "Settings" menu item.
 
-**Context Handoff:** Clipboard sync is live end-to-end. The `Envelope` dispatch pattern established here (HLC tag, loop prevention, size cap) is the template File Transfer and later features reuse.
+2. Sidebar: General, Devices, Clipboard, Files, Notifications,
+   Connection, Appearance, Advanced, About. Clicking switches the
+   content panel. State is in React only — no URL routing needed.
+
+3. Implement panels in this order (block on later milestones for
+   content that isn't built yet):
+   - **General**: "Start at login" toggle (Tauri autostart plugin),
+     "Keep in tray", "Auto-reconnect", "Show connection notifications",
+     "Update channel" dropdown. Wire all to a `get_settings` /
+     `set_setting(key, value)` Tauri command pair backed by a
+     `settings` SQLite table.
+   - **Devices**: list of paired devices with green/gray dots and a
+     "…" overflow menu per device (View details, Disconnect, Forget).
+     "Pair another device" button opens the pairing window.
+   - **Clipboard**: stubbed toggles and inputs — wire to real state in
+     Milestone 5 / 7.
+   - **Files**: stubbed — wire in Milestone 6.
+   - **Notifications**: stubbed — wire in Milestone 8.
+   - **Connection**: auto-reconnect, device discovery, network interface
+     dropdown. Collapsible "Advanced connection information" section
+     showing Local IP, mDNS service name, Transport, TLS version.
+   - **Appearance**: System / Light / Dark radio group. Applies a CSS
+     `data-theme` attribute to `<html>`. Default: System.
+   - **Advanced**: Export logs, Open data folder, Reset settings, Clear
+     local data, Unpair all devices.
+   - **About**: App version + "Check for updates" button, Open-source
+     licenses link, Privacy link, GitHub link, Report issue link.
+     Footer: "Cosync works over your local network. Nothing is
+     uploaded to a server."
+
+4. Status bar at sidebar bottom: "● Cosync is running · v1.0.0"
+   (version pulled from `tauri::VERSION`).
+
+**Iteration 2 — Designed**
+
+Match Images 11, 12, 13, 19 exactly:
+- Two-column layout: 200px sidebar left, content panel right
+- Sidebar item: 16px icon + label, selected state is a filled rounded
+  rect `rgba(255,255,255,0.06)` with blue left accent
+- Content panel: white-space generous, 400px max-width card per section,
+  each row is label + description (12px secondary) + control
+- Toggle rows: label left, native-looking switch right
+- Dropdown: system-styled select or custom component matching OS
+- Destructive rows (Reset, Unpair all, Forget device): red text
+- Device list item: phone icon + name + status dot + overflow button
+
+**Acceptance criteria (Iteration 2):** Every panel renders without
+crashing. Appearance toggle actually changes the theme. Device list
+reflects real paired-device data. All other panels render correctly
+styled with stubs where backend isn't ready yet.
+
+---
+
+## Milestone 4 — Android Client Shell
+
+**Goal:** A real Android app wired to the same Rust core, with the
+mandatory foreground service in place before any feature work.
+
+**Prerequisites:** Milestones 0–2 complete.
+
+**Iteration 1 — Functional (bare minimum first)**
+
+1. Cross-compile `cosync-core` for Android:
+   ```
+   cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release
+   ```
+   Copy `.so` files to `apps/mobile/android/rust-bridge/src/main/jniLibs/<abi>/`.
+
+2. Run `uniffi-bindgen generate --language kotlin` against the
+   `cosync-core` UDL; place generated Kotlin under
+   `rust-bridge/src/main/java/com/cosync/rustbridge/generated/`.
+
+3. Write `CosyncBridgeModule.kt` (extends `ReactContextBaseJavaModule`).
+   Expose only: `startDiscovery()`, `getPairingPayload()`,
+   `pairWithScannedPayload(json)`, plus an event emitter for connection
+   state changes. Register in `MainApplication.kt`.
+
+4. Implement `CosyncForegroundService.kt`. It must start before any
+   discovery call and show a persistent "Cosync is active" notification.
+   This is non-negotiable — do it now, not later.
+
+5. On the TypeScript side: a typed `NativeCosync` module wrapper and a
+   `useCosyncConnection()` hook.
+
+6. Add manifest entries: `FOREGROUND_SERVICE`, `CHANGE_WIFI_MULTICAST_STATE`,
+   `CAMERA`, `INTERNET`, `ACCESS_NETWORK_STATE`, foreground service type
+   declaration.
+
+7. Minimal RN UI — just two screens: `<FirstLaunchScreen>` (bare button
+   that starts the camera) and `<HomeScreen>` (shows "Connected" or
+   "Not connected"). No design yet.
+
+**Acceptance criteria (Iteration 1):** Install on device → foreground
+notification appears → pairing scan works → status screen shows
+"Connected." Killing and reopening reconnects automatically.
+
+**Iteration 2 — Designed**
+
+Apply the mobile design language. Build in this screen order:
+
+**First launch** (Image: Screenshot 10:13:30)
+- Full-screen dark `#0f1117` background
+- Monitor icon centered
+- "Connect your PC" heading
+- "Open Cosync on your computer and show the pairing QR." body
+- "Scan QR" CTA button — full width, blue, rounded, bottom of screen
+- No carousel, no skip button, no dots
+
+**QR Scanner** (Image: Screenshot 10:13:40)
+- Full-screen camera view
+- "Cancel" top left
+- Corner bracket viewfinder overlay (4 rounded L-shapes, white strokes)
+- "Point at the QR on DESKTOP-ATELIER" label below the brackets
+
+**Connecting** (Image: Screenshot 10:13:49)
+- Full screen, centered content
+- "CONNECTING" eyebrow label
+- "Pixel 8 ↔ DESKTOP-ATELIER" with a right-arrow between
+- "Securing connection" subtitle
+- No spinner — the arrow animation is enough
+
+**Home — initial state** (Image: Screenshot 10:14:13, adjusted per
+Sani's instruction)
+- App bar: Cosync logo icon + "Cosync" label + overflow ⋮
+- **Connection card — large, ~45–50% of initial viewport:**
+  - PC monitor icon (large, ~64px)
+  - Device name ("DESKTOP-ATELIER") large bold
+  - `● Connected` status line
+  - "Wi-Fi · Local network" secondary line
+  - NO clipboard/files/notifications toggle cards here — these are
+    on the Control page only. The connection state fills this space.
+- Clipboard section header
+- Search clipboard input
+- List of clipboard history items (icon + preview + source + time + ⋮)
+- Bottom nav: Home (active) | Control
+
+**Home — scrolled state** (Image: Screenshot 10:14:28)
+- Animated collapse of connection card to:
+  ```
+  DESKTOP-ATELIER  ● Connected · Wi-Fi · Local network
+  ```
+  (one line, left-aligned under app bar)
+- Clipboard list fills ~80% of the screen
+- Bottom nav remains visible
+
+**Control page** (Image: Screenshot 10:14:41 / 10:15:18)
+- Compact connection card at top
+- "ALLOW THIS PC TO ACCESS" section with three toggles:
+  Clipboard, Files, Notifications — each with subtitle
+- "SYSTEM STATUS" section:
+  Background access (→ opens app's battery settings),
+  Battery optimization (→ opens battery settings),
+  Notification access (→ opens notification access settings)
+- Received files location (→ folder picker)
+- Connection details (→ bottom sheet)
+- Disconnect
+- Forget this PC (red destructive)
+- About Cosync
+- Footer: "Your data stays between your paired devices."
+
+**Overflow menu** (⋮ in app bar)
+- Connection details
+- Received files
+- Pause connection
+- Disconnect
+- Forget this PC
+- About Cosync
+
+**Connection details bottom sheet** (Image: Screenshot 10:15:28)
+- "Connection details" title
+- Paired device: DESKTOP-ATELIER
+- Connection: ● Connected
+- Network: Wi-Fi · Local network
+- Latency: 14 ms
+- Last sync: Just now
+- Trusted device: Yes
+- "Copy device ID" button + "Close"
+
+**Permission explanation screens** (Image: Screenshot 10:15:18)
+- Back button top left
+- Large permission icon (64px, circle background)
+- Permission name heading
+- Two-sentence explanation of why this is needed and what stays private
+- "Allow access" full-width blue button
+- Never navigate to Android Settings without showing this screen first
+
+**Quick Settings tile and notification style**: implement as Android
+native Kotlin — not React Native. `CosyncTileService.kt` for the
+QS tile, notification styles in `CosyncForegroundService.kt`.
+
+**Acceptance criteria (Iteration 2):** Every screen looks like its
+reference image. Home page has no trust toggles. Connection card is
+large. Scrolling collapses it smoothly. Control page has the toggles.
+Permission screens explain before redirecting to system settings.
+QS tile shows Connected/Disconnected state.
+
+---
+
+## Milestone 5 — Clipboard Sync (Core Feature)
+
+**Goal:** Copy on phone → paste on PC. Copy on PC → paste notification
+on phone. Bidirectional, real-time, conflict-free.
+
+**Prerequisites:** Milestones 3 and 4 (both shells exist and paired).
+
+**Iteration 1 — Functional**
+
+1. Desktop: `arboard` crate, native clipboard change hook
+   (`AddClipboardFormatListener` on Windows, 250ms poll elsewhere).
+   On change, wrap in `Envelope::ClipboardUpdate` with HLC tag and
+   `source_device_id`. Send over the QUIC session.
+
+2. Apply `should_apply_update` (HLC causal ordering + loop prevention)
+   on receive before touching the local clipboard.
+
+3. Android: `ClipboardManager.OnPrimaryClipChangedListener` inside the
+   foreground service. Route through the same `Envelope` path.
+
+4. Android receive → heads-up notification "Copied from DESKTOP-ATELIER
+   — tap to paste." Tapping fires `ClipboardManager.setPrimaryClip`.
+   This is required on Android 12+ because background clipboard writes
+   are blocked without visible user acknowledgment.
+
+5. 5MB hard cap on clipboard payloads. Reject oversized items silently
+   on sender side; log to debug output.
+
+**Acceptance criteria (Iteration 1):** Plain text copied on phone
+appears in PC clipboard within 2 seconds. Plain text copied on PC
+produces a paste notification on phone that works when tapped. Rapid
+alternating copies don't loop.
+
+**Iteration 2 — Designed**
+
+1. Desktop notification style for incoming clipboard item: small,
+   no action buttons needed (the item is already in the clipboard).
+
+2. Android notification style matches the design: "Cosync · Copied from
+   DESKTOP-ATELIER" title, content preview (truncated), "Paste" action
+   button, Cosync icon.
+
+3. Wire the real clipboard history list into `<ClipboardHistoryWindow>`
+   (desktop) — replace stubs from Milestone 3b with real `cosync-core`
+   data.
+
+4. Wire the real clipboard history list into the Home page (mobile).
+
+**Iteration 3 — Polish**
+
+- Image clipboard support (PNG/JPEG)
+- URL type detection (renders link icon in history)
+- Code detection heuristic (renders code icon, monospace preview)
 
 ---
 
 ## Milestone 6 — File Transfer
 
-**Goal:** Drag-and-drop / share files between devices, verified and safely resumable.
+**Goal:** Drag file from desktop to phone, or share file from Android
+to desktop. Chunked, resumable, checksum-verified.
 
-**Prerequisites:** Milestone 5 (proves the Envelope + QUIC-stream pattern works for a real feature).
+**Prerequisites:** Milestone 5 (proves the Envelope+QUIC-stream pattern).
 
-**Implementation Steps:**
-1. Define chunking in `cosync-core`: a `FileMeta` message (filename, size, SHA-256, chunk count) sent first, followed by ordered `FileChunk` messages (64KB each) on a dedicated QUIC stream — QUIC's multiplexing keeps this from blocking clipboard/heartbeat traffic.
-2. Sender side: desktop reads dropped files via Tauri's drag-drop event and Rust's `std::fs`, streaming rather than loading the whole file into memory; Android reads via `MediaStore`/Storage Access Framework, returning a content-URI stream to Rust through the Kotlin bridge.
-3. Receiver side: write incoming chunks to a temp file, verify the SHA-256 against `FileMeta` once complete, then move into place — the Downloads folder on desktop, an app-specific media folder plus a `MediaStore` insert on Android so the file actually shows up in the phone's gallery/file manager.
-4. Handle interruption: if the QUIC stream drops mid-transfer, keep the partial temp file and support resuming from the last acknowledged chunk on reconnect (add a simple resume-offset to the `Ack` response).
-5. Desktop UI: drop-zone plus a transfer progress list. Mobile UI: incoming-transfer notification and progress screen, with "Save"/"Open" actions on completion.
+**Iteration 1 — Functional**
 
-**Acceptance Criteria:** A 200MB video dragged from desktop arrives intact on the phone (checksum matches) and appears in the gallery. Toggling Wi-Fi off mid-transfer and back on resumes rather than restarting from zero.
+1. Rust: `FileMeta` message first (name, size, SHA-256, chunk count),
+   then ordered `FileChunk` messages (64KB each) on a dedicated QUIC
+   stream (multiplexed — doesn't block clipboard or heartbeat traffic).
 
-**Context Handoff:** A second full feature is proven through the same Session/Envelope pipe, including a resumability pattern later milestones can reuse if needed.
+2. Desktop sender: Tauri drag-drop event → stream `std::fs` file in
+   chunks. Desktop receiver: write to temp file, verify checksum,
+   move to `Downloads/Cosync`.
+
+3. Android sender: Storage Access Framework content-URI → stream to
+   Rust bridge → send. Android receiver: write chunks → verify → insert
+   into MediaStore so the file appears in Files/Gallery.
+
+4. Resume support: persist the last acknowledged chunk index; on
+   reconnect, resume from that offset rather than starting over.
+
+**Acceptance criteria (Iteration 1):** A 100MB file dragged from desktop
+arrives on the phone intact (checksum matches, visible in gallery).
+A file shared from Android appears in `Downloads/Cosync` on desktop.
+Dropping Wi-Fi mid-transfer and reconnecting resumes.
+
+**Iteration 2 — Designed**
+
+Desktop tray: when a transfer is active, show the inline progress row
+above the menu items (Image 16 — with active transfer):
+```
+↓ vacation.mp4            78%
+──────────────────────────
+[rest of menu]
+```
+
+Desktop transfer completion notification (Image 14, lower section):
+- "photo.jpg received · From Pixel 8 · just now"
+- "Open" and "Show in folder" action buttons
+- Small, no large Cosync branding
+
+Android transfer progress notification (matching the design in doc):
+- "Receiving vacation.mp4 from DESKTOP-ATELIER"
+- Progress bar, "612 MB / 783 MB"
+- Pause / Cancel actions
+
+Android transfer complete notification:
+- "vacation.mp4 received"
+- Open / Show in Files actions
+
+**Iteration 3 — Polish**
+- Send file from tray "Send file…" item (opens file picker)
+- Folder transfer (zip transparently, unzip on receive)
+- Transfer queue (multiple files in sequence)
 
 ---
 
 ## Milestone 7 — Clipboard History & Search
 
-**Goal:** Persistent, searchable clipboard history on both ends — the core value Cliped demonstrated, brought properly into Cosync.
+**Goal:** Persistent, searchable clipboard history on both devices.
 
-**Prerequisites:** Milestone 5.
+**Prerequisites:** Milestone 5 (clipboard sync working).
 
-**Implementation Steps:**
-1. Add a `clipboard_history` SQLite table (`id`, `content`, `content_type`, `source_device_id`, `hlc_time`, `created_at`) in `cosync-core`. Every accepted `ClipboardUpdate` gets appended, capped at the last 100 items with oldest-eviction.
-2. Add fuzzy search over history rows using a local, offline matching crate (`fuzzy-matcher` or `nucleo`) — no need for a full search-index engine at this scale.
-3. Expose `get_history(query: Option<String>) -> Vec<HistoryItem>` and `restore_history_item(id)` through both Tauri commands and the Android bridge.
-4. Desktop UI: a searchable, click-to-restore history panel.
-5. Mobile UI: a history screen with a search bar; tapping an item to restore it locally triggers the same paste-confirmation flow as Milestone 5 unless it's a purely local write.
+**Iteration 1 — Functional**
 
-**Acceptance Criteria:** History persists across app restarts on both devices. Searching surfaces the right item. Restoring an old item re-syncs it to the other device as a fresh, correctly HLC-tagged update — not a re-broadcast of a stale timestamp.
+1. `clipboard_history` SQLite table: `id`, `content`, `content_type`,
+   `source_device_id`, `hlc_time`, `created_at`. Cap at 100 items
+   (oldest-first eviction).
 
-**Context Handoff:** The full Tier 1 feature set plus clipboard history is complete and shippable as a v1.0 candidate in its own right.
+2. Every accepted `ClipboardUpdate` appended to the table.
+
+3. Expose `get_history(query)` and `restore_history_item(id)` through
+   Tauri commands and the Android bridge.
+
+4. Restoring an old item re-tags it with the current HLC timestamp and
+   re-syncs it as a fresh clipboard update — never re-broadcasts a stale
+   timestamp.
+
+**Iteration 2 — Designed**
+
+- Desktop: real data wired into the clipboard history window from
+  Milestone 3b. Fuzzy search using `fuzzy-matcher` crate. Type icons
+  (text `T`, image 🖼, link `🔗`, code `<>`).
+
+- Mobile: search field on Home page searches local history. Each item
+  shows type icon + preview + source device + time. Tapping an item
+  opens a native Android bottom sheet:
+  `Copy | Send to PC | Delete`
 
 ---
 
 ## Milestone 8 — Notification Mirroring & Quick Replies
 
-**Goal:** Read Android notifications on desktop; reply where the source app supports it.
+**Goal:** Phone notifications appear on desktop. Supported
+notifications can be replied to from the desktop keyboard.
 
-**Prerequisites:** Milestone 4's foreground service pattern. Independent of Milestones 5–7, but benefits from the Envelope pipe being battle-tested first.
+**Prerequisites:** Milestone 4 complete (foreground service stable).
+Best started after Milestones 5–7 are stable.
 
-**Implementation Steps:**
-1. Request `NotificationListenerService` access — a special, user-granted Settings permission, not a manifest runtime permission. The pairing UI should deep-link to the correct Settings screen with clear in-app justification copy (Play Store review expects this).
-2. Implement the listener: on `onNotificationPosted`, extract app name/icon, title, and text — and check `notification.actions` for a `RemoteInput`-capable action, since that's how you detect whether quick-reply is even possible for that notification.
-3. Serialize to a new `Envelope::NotificationEvent` (title, body, package name, notification ID, `has_reply: bool`); send to desktop.
-4. Desktop UI: a panel showing incoming notifications; if `has_reply`, show a reply box.
-5. On reply submit, send `Envelope::NotificationReply(notification_id, text)`. Android's listener looks up the still-active `StatusBarNotification` by ID, retrieves its `RemoteInput` action, and fires it via `PendingIntent.send()` with the input bundle populated. This only works while the original notification is still active — fail gracefully with a clear error if it's already been dismissed, rather than crashing.
-6. Maintain an allow/deny list by package name (desktop-side, user-editable) rather than mirroring every system notification by default.
+**Iteration 1 — Functional**
 
-**Acceptance Criteria:** A WhatsApp message on the phone appears on desktop within ~1 second. Typing a reply on desktop and sending it actually delivers the message from the phone.
+1. `NotificationListenerService` on Android. User grants permission via
+   the Control page Notifications toggle → permission explanation screen
+   → Android notification access settings.
 
-**Context Handoff:** The full Tier 2 workflow feature set is complete — a natural v1.5 release point.
+2. On `onNotificationPosted`: extract app name, title, body, package,
+   notification ID. Check `notification.actions` for `RemoteInput`
+   capability — set `has_reply: true` if present.
+
+3. New proto message `NotificationEvent`; send to desktop.
+
+4. Desktop: fire a native OS notification (via `tauri-plugin-notification`)
+   with the source app's name and the phone identifier as suffix
+   ("WhatsApp · Pixel 8"). If `has_reply`, add an inline reply text
+   field and Send button — these are OS notification actions, not a
+   Cosync window.
+
+5. Reply path: user types in the OS notification reply field → desktop
+   sends `NotificationReply(id, text)` → phone's listener retrieves
+   the `StatusBarNotification` by ID and fires the `RemoteInput`
+   `PendingIntent`. Fail gracefully if the notification was already
+   dismissed (show brief error toast, no crash).
+
+6. Allow/deny list by package name, configurable in Settings →
+   Notifications (default: all off, user enables per-app).
+
+**Acceptance criteria (Iteration 1):** WhatsApp message on phone
+appears as desktop notification within ~1 second. Reply from desktop
+delivers via WhatsApp on the phone.
+
+**Iteration 2 — Designed**
+
+Match Image 14 (notification mockup) exactly:
+- "WhatsApp · Pixel 8" header with WhatsApp app icon
+- Message preview
+- Inline reply field + Send button (when `has_reply`)
+- Telegram example shows no reply field (body only) when
+  `has_reply` is false
+- No large Cosync banner — the originating app's icon is the identity
 
 ---
 
 ## Milestone 9 — Production Hardening
 
-**Goal:** Turn a working prototype into something trustworthy enough to run unattended, always-on, in the background.
+**Goal:** A daily-drivable, trustworthy background service.
 
-**Prerequisites:** Milestones 5–8 (or whichever subset you've shipped — hardening applies to whatever exists).
+**Prerequisites:** Milestones 5–8 complete.
 
-**Implementation Steps:**
-1. Integrate crash reporting (Sentry or similar) in both the Tauri Rust/JS layers and the Android Kotlin/RN layers — scrub clipboard content from crash payloads; never log actual clipboard text.
-2. Wire up Tauri's built-in auto-updater against your own release feed (a GitHub Releases JSON endpoint is enough at this stage).
-3. Stress-test reconnection: script Wi-Fi toggling, band switching (2.4GHz/5GHz), and USB plug/unplug on a real device over several hours; fix whatever edge cases surface — this is where gaps in your own reconnect logic show up, not QUIC's.
-4. Run a memory/handle-leak audit: `valgrind`/`heaptrack` on desktop, Android Studio's profiler on mobile, over a few hours of simulated use — specifically check for un-dropped `Arc<Mutex<_>>` cycles and unclosed file handles.
-5. Acquire a Windows code-signing certificate (or use a free option like SignPath.io's open-source program if Cosync stays open source; budget for a paid EV cert if it stays closed).
-6. Prepare Play Store submission materials: data-safety declarations and justification copy for `AccessibilityService`/`NotificationListenerService` usage — expect at least one review round-trip and budget the time for it.
+1. Sentry crash reporting in Tauri (Rust + JS) and Android (Kotlin + RN).
+   **Never log clipboard content.** Scrub before sending.
 
-**Acceptance Criteria:** The app installs with no security warnings, survives a multi-hour unattended soak test without leaking memory or losing connection state, and passes an internal pre-review checklist against Play Store's policies.
+2. Tauri auto-updater wired to GitHub Releases feed.
 
-**Context Handoff:** This is the real v1.0 — the point where it's a genuine daily driver, and where you'd feel fine handing it to someone else if you ever choose to.
+3. Stress test reconnection: Wi-Fi toggle, band switch (2.4/5GHz),
+   sleep/wake, device reboot — multi-hour soak.
+
+4. Memory leak audit: `heaptrack` on desktop, Android Studio Memory
+   Profiler on mobile. Fix any un-dropped `Arc<Mutex<_>>` cycles or
+   unclosed file handles.
+
+5. Windows code-signing certificate. Play Store submission materials
+   including data-safety form and justification copy for
+   `NotificationListenerService` (expect at least one review round-trip).
+
+6. Auto-start on login: Tauri autostart plugin, wired to the
+   "Start at login" toggle in Settings → General.
+
+**Acceptance criteria:** Multi-hour unattended soak test passes.
+Installs without security warnings on Windows. Play Store review
+materials drafted.
 
 ---
 
 ## Milestone 10 — Deferred (v2.0): Virtual Webcam, Mic, SMS/Calls
 
-**Status:** Intentionally under-specified. Documented here for completeness, not as an active task list. Don't start this until Milestone 9 is genuinely done and you've used the app daily for a while — this is the highest-risk, highest-effort part of the entire project.
+**Status:** Intentionally under-specified. Don't start this before
+Milestone 9 is fully done and you've used the app as a daily driver.
 
-**Notes for when you're ready to scope it properly:**
-- **Virtual webcam:** `CameraX` capture → `MediaCodec` H.264 encode → QUIC stream → PC-side decode (`openh264` or `ffmpeg-next`) → feed into the existing OBS Virtual Camera plugin API rather than writing a custom DirectShow filter from scratch.
-- **Virtual mic:** same pipeline shape, with an Opus codec (`audiopus` crate) in place of H.264.
-- **SMS/Calls:** requires either being set as the device's default SMS app or requesting `READ_SMS`/`READ_CALL_LOG`, both Play Store-restricted permission categories requiring a "core functionality" declaration and likely additional Google review — validate this is even approvable for your use case before investing engineering time.
+- **Virtual webcam:** CameraX → MediaCodec H.264 → QUIC → PC decode
+  → OBS Virtual Camera plugin API (don't write a DirectShow filter
+  from scratch).
+- **Virtual mic:** same pipeline, Opus codec.
+- **SMS/Calls:** requires being set as default SMS app — validate Play
+  Store approvability before investing engineering time.
 
-When you're ready to actually build this milestone, it should get the same Goal/Prerequisites/Steps/Acceptance/Handoff treatment as everything above — worth a dedicated planning pass rather than an extension of this one.
+---
+
+## Iteration Checklist (use per milestone)
+
+Before marking any milestone done, verify:
+
+- [ ] Works with a real paired device (not just the test suite)
+- [ ] No regressions in previously-completed milestones
+- [ ] UI matches the design system reference above
+- [ ] No hardcoded strings that should be dynamic
+- [ ] Error states are handled visibly (no silent failures)
+- [ ] Keyboard-navigable on desktop where applicable
+- [ ] Does not log, store, or transmit clipboard content in any error report
+
