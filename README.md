@@ -1,3 +1,5 @@
+[![CoSync Build](https://github.com/Lycan-Xx/CoSync/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Lycan-Xx/CoSync/actions/workflows/build.yml)
+
 # CoSync
 
 A cross-platform device mesh: clipboard, files, and phone accessibility
@@ -12,6 +14,10 @@ your PC and it's on your phone's gallery a second later. Eventually:
 notification mirroring, quick replies from the desktop, and (further out)
 using your phone's camera as a PC webcam — all over a direct, encrypted,
 device-to-device connection.
+
+## Philosoph
+
+Cosync should not look like just another application that manages device synchronization. It should make device synchronization feel like part of the operating system.
 
 **Priority order:** Android → Windows first, Linux second, iOS only if
 real demand shows up. macOS is intentionally out of scope — see
