@@ -21,7 +21,7 @@ use tokio::sync::Mutex as AsyncMutex;
 struct AppState {
     identity: DeviceIdentity,
     cert: DeviceCertificate,
-    store: PairedDeviceStore,
+    store: AsyncMutex<PairedDeviceStore>,
     pairing_addr: SocketAddr,
     current_pairing_token: AsyncMutex<String>,
     connection_status: AsyncMutex<HashMap<String, bool>>,
@@ -81,7 +81,12 @@ async fn get_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<String
 async fn list_paired_devices(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<PairedDeviceWithStatus>, String> {
-    let devices = state.store.list_all().map_err(|e| e.to_string())?;
+    let devices = state
+        .store
+        .lock()
+        .await
+        .list_all()
+        .map_err(|e| e.to_string())?;
     let status = state.connection_status.lock().await;
 
     Ok(devices
@@ -131,7 +136,7 @@ async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
         .await
         {
             Ok((device, _session)) => {
-                if let Err(err) = state.store.upsert(&device) {
+                if let Err(err) = state.store.lock().await.upsert(&device) {
                     eprintln!("cosync: failed to persist paired device: {err}");
                     continue;
                 }
@@ -200,7 +205,7 @@ pub fn run() {
             let state = Arc::new(AppState {
                 identity,
                 cert,
-                store,
+                store: AsyncMutex::new(store),
                 pairing_addr,
                 current_pairing_token: AsyncMutex::new(random_token()),
                 connection_status: AsyncMutex::new(HashMap::new()),
