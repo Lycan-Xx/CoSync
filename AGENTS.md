@@ -19,6 +19,15 @@ State explicitly when falling back to PowerShell.
 
 ---
 
+## Commit standard
+
+All commits must be detailed and explanatory, following the milestone 1
+and milestone 2 commit-message format. Commit messages must clearly state
+the milestone or scope, summarize the completed work, and explain the
+important implementation changes and verification performed.
+
+---
+
 ## Platform targets
 
 Cosync runs on **Windows 10/11 and Linux**. Both platforms are

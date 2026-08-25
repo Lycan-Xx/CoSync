@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "apps/desktop/src-tauri",
+    "tools/uniffi-bindgen",
 ]
 
 [workspace.package]
