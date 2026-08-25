@@ -55,6 +55,8 @@ cd apps/desktop && npm install && npm run tauri dev
 cd apps/mobile && npm install && npx expo run:android
 \`\`\`
 
+## Mobile shell Vision
+The phone app is not a companion to the desktop it is the trust surface for the desktop, and almost everything else the user does with CoSync on mobile should happen in Android's own surfaces, not inside CoSync's.
 ## License
 
 MIT — see [\`LICENSE\`](LICENSE).
