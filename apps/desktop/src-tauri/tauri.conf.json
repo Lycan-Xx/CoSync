@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "CoSync",
-        "width": 800,
-        "height": 600
+        "title": "CoSync — pair",
+        "width": 580,
+        "height": 620,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {

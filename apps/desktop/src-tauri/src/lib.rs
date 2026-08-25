@@ -15,6 +15,7 @@ use cosync_core::{
 };
 use rand::RngCore;
 use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
@@ -30,6 +31,17 @@ fn random_token() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+fn desktop_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "THIS PC".to_string())
+}
+
+#[tauri::command]
+fn get_hostname() -> String {
+    desktop_name()
 }
 
 /// Best-effort local IPv4 address to embed in the pairing QR as an
@@ -55,7 +67,7 @@ async fn get_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<String
     *state.current_pairing_token.lock().await = token.clone();
 
     let payload = PairingPayload {
-        device_name: "Sani's Desktop".to_string(),
+        device_name: desktop_name(),
         public_key_fingerprint: state.cert.fingerprint(),
         ip_hint: local_ip_hint(),
         port: state.pairing_addr.port(),
@@ -165,6 +177,7 @@ async fn update_tray_tooltip(app: &tauri::AppHandle, state: &Arc<AppState>) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let data_dir = default_app_data_dir().expect("resolve app data dir");
             std::fs::create_dir_all(&data_dir).expect("create app data dir");
@@ -230,6 +243,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            let clipboard_shortcut =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyV);
+            app.global_shortcut().register(clipboard_shortcut)?;
+
             // Background pairing listener.
             let app_handle = app.handle().clone();
             let listener_state = state.clone();
@@ -243,7 +260,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_pairing_qr,
             list_paired_devices,
-            get_connection_status
+            get_connection_status,
+            get_hostname
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
