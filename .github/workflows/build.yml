@@ -126,9 +126,103 @@ jobs:
             target/release/bundle/appimage/*.AppImage
             target/release/bundle/rpm/*.rpm
 
+  android:
+    name: Test and build Android mobile app
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '27.1'
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+
+      - name: Install Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            aarch64-linux-android
+            armv7-linux-androideabi
+            x86_64-linux-android
+            i686-linux-android
+
+      - name: Install cargo-ndk and UniFFI generator
+        run: |
+          cargo install cargo-ndk --locked
+          cargo install uniffi_bindgen --version 0.25.3 --locked
+
+      - name: Build Rust mobile libraries
+        run: |
+          cargo ndk \
+            -t armeabi-v7a \
+            -t arm64-v8a \
+            -t x86 \
+            -t x86_64 \
+            build -p cosync-core --release --features mobile-bindings
+
+      - name: Generate Kotlin UniFFI bindings
+        run: |
+          mkdir -p \
+            apps/mobile/android/app/src/main/jniLibs/armeabi-v7a \
+            apps/mobile/android/app/src/main/jniLibs/arm64-v8a \
+            apps/mobile/android/app/src/main/jniLibs/x86 \
+            apps/mobile/android/app/src/main/jniLibs/x86_64
+          cp target/armv7-linux-androideabi/release/libcosync_core.so \
+            apps/mobile/android/app/src/main/jniLibs/armeabi-v7a/
+          cp target/aarch64-linux-android/release/libcosync_core.so \
+            apps/mobile/android/app/src/main/jniLibs/arm64-v8a/
+          cp target/i686-linux-android/release/libcosync_core.so \
+            apps/mobile/android/app/src/main/jniLibs/x86/
+          cp target/x86_64-linux-android/release/libcosync_core.so \
+            apps/mobile/android/app/src/main/jniLibs/x86_64/
+          mkdir -p apps/mobile/android/app/src/main/java/uniffi
+          uniffi-bindgen generate \
+            target/aarch64-linux-android/release/libcosync_core.so \
+            --language kotlin \
+            --out-dir apps/mobile/android/app/src/main/java/uniffi
+
+      - name: Install mobile dependencies
+        working-directory: apps/mobile
+        run: npm ci
+
+      - name: Build Android debug APK
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosync-android-apk
+          if-no-files-found: error
+          path: apps/mobile/android/app/build/outputs/apk/debug/*.apk
+
   release:
     name: Publish cross-platform release
-    needs: [windows, linux]
+    needs: [windows, linux, android]
     runs-on: ubuntu-latest
 
     steps:
