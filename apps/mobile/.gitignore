@@ -36,6 +36,6 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# generated native folders
+# The Android project is intentionally checked in: Milestone 4A uses a
+# custom native bridge and foreground service. iOS remains generated later.
 /ios
-/android

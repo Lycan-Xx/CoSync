@@ -17,6 +17,12 @@ pub mod pairing_session;
 pub mod transport;
 pub mod verifier;
 
+#[cfg(feature = "mobile-bindings")]
+pub mod mobile;
+
+#[cfg(feature = "mobile-bindings")]
+uniffi::include_scaffolding!("cosync_mobile");
+
 /// Generated from `proto/cosync.proto` by `build.rs` (prost-build).
 pub mod proto {
     #![allow(clippy::all)]
