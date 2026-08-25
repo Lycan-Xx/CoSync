@@ -13,7 +13,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::cert::DeviceCertificate;
-use crate::verifier::{PinnedClientVerifier, PinnedServerVerifier};
+use crate::verifier::{AcceptAnyClientVerifier, PinnedClientVerifier, PinnedServerVerifier};
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -92,6 +92,29 @@ pub fn build_client_endpoint(
     Ok(endpoint)
 }
 
+/// Build a QUIC server endpoint for **pairing mode only**: accepts a
+/// connection from any client certificate (see
+/// [`crate::verifier::AcceptAnyClientVerifier`] for why that's safe in
+/// this specific narrow context). Used exclusively by
+/// `pairing_session::accept_pairing_connection`, never as a long-lived
+/// endpoint for already-paired devices — those use
+/// [`build_server_endpoint`] with a real pinned fingerprint.
+pub fn build_pairing_server_endpoint(
+    bind_addr: SocketAddr,
+    cert: &DeviceCertificate,
+) -> Result<quinn::Endpoint, TransportError> {
+    let mut tls_config = rustls::ServerConfig::builder()
+        .with_safe_defaults()
+        .with_client_cert_verifier(std::sync::Arc::new(AcceptAnyClientVerifier))
+        .with_single_cert(vec![cert.rustls_certificate()], cert.rustls_private_key())?;
+    tls_config.alpn_protocols = vec![b"cosync".to_vec()];
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(tls_config));
+    server_config.transport_config(bounded_transport_config());
+    let endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
+    Ok(endpoint)
+}
+
 /// A live, mutually-authenticated connection to one specific paired
 /// device. This is deliberately thin at Milestone 2 — `send`/`on_receive`
 /// of real `Envelope`s is Milestone 5's job; this just proves the tunnel
@@ -101,6 +124,16 @@ pub struct Session {
 }
 
 impl Session {
+    /// The fingerprint of the certificate the *peer* presented on this
+    /// connection. During pairing-mode acceptance (where the server
+    /// hasn't pinned anything yet), this is how it learns what to pin
+    /// going forward.
+    pub fn peer_fingerprint(&self) -> Option<String> {
+        let certs = self.connection.peer_identity()?;
+        let certs = certs.downcast_ref::<Vec<rustls::Certificate>>()?;
+        let end_entity = certs.first()?;
+        Some(crate::cert::fingerprint_of_der(&end_entity.0))
+    }
     /// Client side: dial a peer we already know the address and pinned
     /// fingerprint for (from a fresh QR scan, or from the `paired_devices`
     /// table on reconnect).

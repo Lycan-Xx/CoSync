@@ -29,6 +29,7 @@ pub enum CertError {
 
 /// A device's persistent self-signed TLS identity: the certificate quinn
 /// presents during the QUIC handshake, plus its private key.
+#[derive(Clone)]
 pub struct DeviceCertificate {
     pub cert_der: Vec<u8>,
     pub key_der: Vec<u8>,

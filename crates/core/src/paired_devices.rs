@@ -16,7 +16,7 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PairedDevice {
     pub device_id: String,
     pub device_name: String,

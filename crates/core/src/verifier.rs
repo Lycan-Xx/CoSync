@@ -96,6 +96,50 @@ impl rustls::server::ClientCertVerifier for PinnedClientVerifier {
     }
 }
 
+/// Accepts *any* client certificate, without checking its fingerprint
+/// against anything. This exists for exactly one purpose: the server side
+/// of a brand-new pairing connection, where the desktop hasn't learned
+/// the phone's certificate fingerprint yet (the QR code only carries the
+/// *desktop's* fingerprint to the phone — nothing flows back the other
+/// way until the phone dials in).
+///
+/// This is **not** "no security." The TLS tunnel is still fully
+/// encrypted; what's missing at this point is peer *authentication*, not
+/// confidentiality. Authentication for the pairing exchange itself comes
+/// from the one-time `pairing_token` carried inside the first
+/// `PairingRequest` envelope sent over that encrypted tunnel (see
+/// `pairing_session.rs`) — the same trust model as typing a PIN or
+/// scanning a QR code to pair a Bluetooth device or use AirDrop. Once
+/// that token is verified, the server captures the peer's *actual*
+/// certificate fingerprint from the now-authenticated exchange and pins
+/// it going forward via `PinnedClientVerifier` for every future
+/// reconnection. This verifier is only ever used for the single,
+/// short-lived pairing-mode listener — never for a steady-state session
+/// endpoint.
+pub struct AcceptAnyClientVerifier;
+
+impl rustls::server::ClientCertVerifier for AcceptAnyClientVerifier {
+    fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::server::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::ClientCertVerified::assertion())
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        // Still require *a* certificate be presented (so we have
+        // something to fingerprint once the token checks out) — just
+        // don't check it against a pin yet.
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

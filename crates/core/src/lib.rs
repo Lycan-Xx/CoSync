@@ -8,10 +8,12 @@
 
 pub mod cert;
 pub mod discovery;
+pub mod framing;
 pub mod hlc;
 pub mod identity;
 pub mod paired_devices;
 pub mod pairing;
+pub mod pairing_session;
 pub mod transport;
 pub mod verifier;
 
@@ -27,6 +29,7 @@ pub use hlc::{should_apply_update, HlcTimestamp, HybridLogicalClock};
 pub use identity::{default_app_data_dir, DeviceIdentity, IdentityError};
 pub use paired_devices::{PairedDevice, PairedDeviceStore};
 pub use pairing::PairingPayload;
+pub use pairing_session::{accept_pairing_connection, dial_and_send_pairing_request, PairingError};
 pub use transport::Session;
 
 #[cfg(test)]
