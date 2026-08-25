@@ -178,6 +178,55 @@ No onboarding carousel. No welcome tutorial.
 
 ---
 
+## Platform Targets & Performance Contract
+
+**Supported platforms:** Windows 10/11 and Linux (primary). Both must
+work seamlessly and receive equal implementation attention. Native
+platform-specific libraries (Win32 APIs, GTK, libnotify, etc.) are
+only used when they provide a clear, measurable advantage in latency
+or resource efficiency over the cross-platform Tauri/Rust path. Never
+use a native-only API just because it's convenient — it must earn its
+complexity by being faster or lighter.
+
+**Performance is a first-class requirement, not a quality-of-life
+concern.** The acceptance criteria for every milestone implicitly
+includes: no unnecessary memory allocation in hot paths, no polling
+where event-driven alternatives exist, no blocking the main thread,
+no redundant re-renders. A feature that works but is sluggish or
+resource-heavy is not done.
+
+Specific targets:
+- Clipboard sync end-to-end latency: < 200ms on local Wi-Fi
+- File transfer throughput: within 80% of raw Wi-Fi throughput
+  (QUIC overhead should be negligible)
+- Desktop idle memory: < 50MB RSS after first run settles
+- Android foreground service idle: < 5% battery drain per hour
+  measured over a 4-hour soak
+- UI frame budget: 60fps — no janky transitions, no blocking
+  operations on the React render thread
+
+When choosing between two implementation approaches, the faster and
+lighter one wins unless there is a correctness reason to prefer the
+other. Document the reason if you choose the slower path.
+
+**Cross-platform implementation rules:**
+- Write Rust logic once in `cosync-core` — never duplicate networking,
+  crypto, or sync logic in platform-specific code
+- Tauri abstracts the webview — use it; don't write Win32 or GTK UI
+  directly unless profiling shows the webview is a bottleneck
+- For system notifications: use `tauri-plugin-notification` which
+  maps to WinRT toast on Windows and libnotify on Linux. Only drop
+  to raw Win32/DBus if the plugin can't support a required feature
+- For the system tray: Tauri's tray API is cross-platform — use it
+- For clipboard hooks: Windows has `AddClipboardFormatListener`
+  (event-driven, zero-cost idle); Linux has no equivalent so use
+  a 250ms poll with X11/Wayland clipboard APIs via `arboard`. This
+  is the one justified platform divergence in the clipboard path.
+- For global shortcuts: `tauri-plugin-global-shortcut` handles both
+- Test every feature on both platforms before marking a milestone done
+
+---
+
 ## Architecture Summary
 
 | Layer | Choice |
@@ -360,27 +409,31 @@ in the desktop app. Sidebar navigation with 9 panels.
 1. New Tauri window: `settings`. Width: 740, height: 560, resizable.
    Open from tray "Settings" menu item.
 
-2. Sidebar: General, Devices, Clipboard, Files, Notifications,
-   Connection, Appearance, Advanced, About. Clicking switches the
-   content panel. State is in React only — no URL routing needed.
+2. Sidebar: General, Clipboard, Files, Notifications, Connection,
+   Appearance, Advanced, About. **No separate Devices tab** — device
+   management lives in General. Clicking switches the content panel.
+   State is in React only — no URL routing needed.
 
 3. Implement panels in this order (block on later milestones for
    content that isn't built yet):
-   - **General**: "Start at login" toggle (Tauri autostart plugin),
-     "Keep in tray", "Auto-reconnect", "Show connection notifications",
+   - **General**: Two sections in one panel:
+     *App behavior* — "Start at login" toggle (Tauri autostart
+     plugin), "Keep in tray", "Show connection notifications",
      "Update channel" dropdown. Wire all to a `get_settings` /
      `set_setting(key, value)` Tauri command pair backed by a
      `settings` SQLite table.
-   - **Devices**: list of paired devices with green/gray dots and a
-     "…" overflow menu per device (View details, Disconnect, Forget).
-     "Pair another device" button opens the pairing window.
+     *Paired devices* — list of paired devices with green/gray
+     status dots and a "…" overflow menu per device (Disconnect,
+     Forget). "Pair another device" button at bottom opens the
+     pairing window. This is the only place device management lives.
    - **Clipboard**: stubbed toggles and inputs — wire to real state in
      Milestone 5 / 7.
    - **Files**: stubbed — wire in Milestone 6.
    - **Notifications**: stubbed — wire in Milestone 8.
-   - **Connection**: auto-reconnect, device discovery, network interface
-     dropdown. Collapsible "Advanced connection information" section
-     showing Local IP, mDNS service name, Transport, TLS version.
+   - **Connection**: auto-reconnect toggle, device discovery toggle,
+     network interface dropdown (Automatic / list of interfaces).
+     Collapsible "Advanced connection information" section showing
+     Local IP, mDNS service name, Transport (QUIC), TLS version.
    - **Appearance**: System / Light / Dark radio group. Applies a CSS
      `data-theme` attribute to `<html>`. Default: System.
    - **Advanced**: Export logs, Open data folder, Reset settings, Clear
@@ -395,8 +448,10 @@ in the desktop app. Sidebar navigation with 9 panels.
 
 **Iteration 2 — Designed**
 
-Match Images 11, 12, 13, 19 exactly:
+Match Images 11, 12, 13, 19 with the following corrections:
 - Two-column layout: 200px sidebar left, content panel right
+- Sidebar: 8 items (General, Clipboard, Files, Notifications,
+  Connection, Appearance, Advanced, About). No Devices entry.
 - Sidebar item: 16px icon + label, selected state is a filled rounded
   rect `rgba(255,255,255,0.06)` with blue left accent
 - Content panel: white-space generous, 400px max-width card per section,
@@ -404,7 +459,11 @@ Match Images 11, 12, 13, 19 exactly:
 - Toggle rows: label left, native-looking switch right
 - Dropdown: system-styled select or custom component matching OS
 - Destructive rows (Reset, Unpair all, Forget device): red text
-- Device list item: phone icon + name + status dot + overflow button
+- Device list item (in General panel): generic phone icon (Fluent
+  UI smartphone outline, 20px) + name + status dot + overflow button.
+  **No device photo, no model-specific image** — it would require
+  a lookup service which contradicts the local-first, no-cloud model.
+  The generic phone icon is sufficient and always correct.
 
 **Acceptance criteria (Iteration 2):** Every panel renders without
 crashing. Appearance toggle actually changes the theme. Device list
@@ -730,9 +789,17 @@ Best started after Milestones 5–7 are stable.
 
 4. Desktop: fire a native OS notification (via `tauri-plugin-notification`)
    with the source app's name and the phone identifier as suffix
-   ("WhatsApp · Pixel 8"). If `has_reply`, add an inline reply text
-   field and Send button — these are OS notification actions, not a
-   Cosync window.
+   ("WhatsApp · Pixel 8"). If `has_reply`, add the reply as a native
+   OS notification action button — **no custom Cosync reply window**.
+   On Windows this uses WinRT toast actions; on Linux it uses
+   libnotify action buttons. Both are native and require zero custom
+   UI. The trade-off: on Windows, notification action buttons only
+   appear when the user has "Show notification actions" enabled (it
+   is on by default in Windows 10/11). This is intentional — the
+   feature is opt-in at the OS level and we don't build around it.
+   Document this clearly in Settings → Notifications: "Quick replies
+   use native notification actions. If buttons don't appear, check
+   Windows notification settings."
 
 5. Reply path: user types in the OS notification reply field → desktop
    sends `NotificationReply(id, text)` → phone's listener retrieves
@@ -806,13 +873,41 @@ Milestone 9 is fully done and you've used the app as a daily driver.
 
 ## Iteration Checklist (use per milestone)
 
-Before marking any milestone done, verify:
+Before marking any milestone done, verify every item below. A milestone
+is not done if any of these fail.
 
+**Correctness**
 - [ ] Works with a real paired device (not just the test suite)
 - [ ] No regressions in previously-completed milestones
-- [ ] UI matches the design system reference above
-- [ ] No hardcoded strings that should be dynamic
 - [ ] Error states are handled visibly (no silent failures)
+- [ ] No hardcoded strings that should be dynamic
+
+**Cross-platform**
+- [ ] Tested on Windows 10 or 11
+- [ ] Tested on Linux (Ubuntu 22.04+ or equivalent)
+- [ ] No Windows-only or Linux-only code paths except where explicitly
+      documented with a performance justification (clipboard hooks are
+      the single allowed exception)
+- [ ] System notifications fire correctly on both platforms
+
+**Design**
+- [ ] UI matches the design system reference above
 - [ ] Keyboard-navigable on desktop where applicable
-- [ ] Does not log, store, or transmit clipboard content in any error report
+- [ ] Settings sidebar has 8 items (no Devices tab)
+- [ ] Notification replies use native OS action buttons only
+- [ ] Device list shows generic phone icon, no photos
+
+**Performance**
+- [ ] No polling loops where event-driven alternatives exist
+- [ ] No blocking operations on the main/render thread
+- [ ] Clipboard sync latency < 200ms measured on local Wi-Fi
+- [ ] Desktop idle memory has not regressed from the previous milestone
+- [ ] No unnecessary React re-renders on clipboard/status events
+      (use `React.memo`, `useMemo`, or `useCallback` where profiling
+      shows it matters — not by default everywhere)
+
+**Privacy & security**
+- [ ] Does not log, store, or transmit clipboard content in any
+      error report or crash payload
+- [ ] No personal data leaves the LAN
 
