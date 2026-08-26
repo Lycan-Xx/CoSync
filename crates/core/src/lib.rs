@@ -21,6 +21,9 @@ pub mod verifier;
 pub mod mobile;
 
 #[cfg(feature = "mobile-bindings")]
+pub use mobile::ConnectionClient;
+
+#[cfg(feature = "mobile-bindings")]
 uniffi::include_scaffolding!("cosync_mobile");
 
 /// Generated from `proto/cosync.proto` by `build.rs` (prost-build).
