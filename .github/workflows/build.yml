@@ -2,12 +2,24 @@ name: CoSync Build
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform build to run
+        required: true
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+          - android
+        default: all
 
 permissions:
   contents: write
 
 jobs:
   windows:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
     name: Test and build Windows desktop
     runs-on: windows-2022
 
@@ -60,6 +72,7 @@ jobs:
             target/release/bundle/msi/*.msi
 
   linux:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
     name: Test and build Linux desktop
     runs-on: ubuntu-22.04
 
@@ -129,6 +142,7 @@ jobs:
             target/release/bundle/rpm/*.rpm
 
   android:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
     name: Test and build Android mobile app
     runs-on: ubuntu-22.04
 
@@ -228,6 +242,7 @@ jobs:
   release:
     name: Publish cross-platform release
     needs: [windows, linux, android]
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
 
     steps:

@@ -11,6 +11,15 @@ import androidx.core.app.NotificationCompat
 
 /** Keeps the future long-lived Cosync session alive while the app is backgrounded. */
 class CosyncForegroundService : Service() {
+  companion object {
+    const val ACTION_STOP = "com.cosync.mobile.STOP_CONNECTION"
+    private const val CHANNEL_ID = "cosync_connection"
+    private const val NOTIFICATION_ID = 57823
+
+    fun intent(context: android.content.Context): Intent =
+      Intent(context, CosyncForegroundService::class.java)
+  }
+
   override fun onCreate() {
     super.onCreate()
     val manager = getSystemService(NotificationManager::class.java)
@@ -43,9 +52,4 @@ class CosyncForegroundService : Service() {
 
   override fun onBind(intent: Intent?): IBinder? = null
 
-  companion object {
-    const val ACTION_STOP = "com.cosync.mobile.STOP_CONNECTION"
-    private const val CHANNEL_ID = "cosync_connection"
-    private const val NOTIFICATION_ID = 57823
-  }
 }
