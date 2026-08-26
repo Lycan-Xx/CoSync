@@ -1,7 +1,7 @@
 //! Android-facing connection object for Milestone 4A.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::cert::DeviceCertificate;
 use crate::framing::write_envelope;
@@ -18,13 +18,13 @@ pub struct ConnectionClient {
 }
 
 impl ConnectionClient {
-    pub fn new(data_dir: String) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(data_dir: String) -> Self {
+        Self {
             data_dir: PathBuf::from(data_dir),
             runtime: tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("create mobile Tokio runtime"),
             endpoint: Mutex::new(None),
             session: Mutex::new(None),
-        })
+        }
     }
 
     pub fn pair(&self, payload_json: String, device_name: String) -> String {
