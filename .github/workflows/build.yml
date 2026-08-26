@@ -212,18 +212,18 @@ jobs:
         working-directory: apps/mobile
         run: npm ci
 
-      - name: Build Android debug APK
+      - name: Build Android release APK
         working-directory: apps/mobile/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: cosync-android-apk
           if-no-files-found: error
-          path: apps/mobile/android/app/build/outputs/apk/debug/*.apk
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
 
   release:
     name: Publish cross-platform release
