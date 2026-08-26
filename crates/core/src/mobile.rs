@@ -37,15 +37,20 @@ impl ConnectionClient {
             let identity = DeviceIdentity::load_or_create(&self.data_dir).map_err(|error| error.to_string())?;
             let cert = DeviceCertificate::load_or_create(&self.data_dir).map_err(|error| error.to_string())?;
             let server_addr = format!("{}:{}", payload.ip_hint, payload.port).parse::<std::net::SocketAddr>().map_err(|error| format!("invalid desktop address: {error}"))?;
-            let endpoint = build_client_endpoint("0.0.0.0:0".parse().expect("valid mobile bind address"), &cert, &payload.public_key_fingerprint).map_err(|error| error.to_string())?;
             let device_id = identity.fingerprint();
-            let session = self.runtime.block_on(async {
+            let (endpoint, session) = self.runtime.block_on(async {
+                let endpoint = build_client_endpoint(
+                    "0.0.0.0:0".parse().expect("valid mobile bind address"),
+                    &cert,
+                    &payload.public_key_fingerprint,
+                )
+                .map_err(|error| error.to_string())?;
                 let session = Session::connect(&endpoint, server_addr, "cosync.local").await.map_err(|error| error.to_string())?;
                 let (mut send, _recv) = session.connection.open_bi().await.map_err(|error| error.to_string())?;
                 let request = Envelope { device_id, logical_time: 0, physical_time_ms: 0, payload: Some(Payload::PairingRequest(PairingRequest { device_name, public_key_fingerprint: cert.fingerprint(), pairing_token: payload.pairing_token })) };
                 write_envelope(&mut send, &request).await.map_err(|error| error.to_string())?;
                 send.finish().await.map_err(|error| error.to_string())?;
-                Ok::<Session, String>(session)
+                Ok::<(quinn::Endpoint, Session), String>((endpoint, session))
             })?;
             *self.endpoint.lock().map_err(|error| error.to_string())? = Some(endpoint);
             *self.session.lock().map_err(|error| error.to_string())? = Some(session);
