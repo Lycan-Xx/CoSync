@@ -124,3 +124,25 @@ test (wait on `connection.closed()` to observe the server's actual
 verdict), not in `verifier.rs`. Documented here because it's a subtlety
 worth remembering before trusting any future "did the handshake
 succeed?" check that doesn't account for it.
+
+---
+
+## ADR-006: Fixed pairing port with a scoped Windows installer firewall rule
+
+**Status:** Accepted
+
+**Decision:** CoSync pairing uses UDP port 48215. The Windows NSIS
+installer runs per-machine and adds a firewall exception restricted to the
+installed CoSync executable, that UDP port, Private profiles, and the local
+subnet. The uninstaller removes the rule.
+
+**Measured justification:** On the primary Windows development host, all
+Windows Firewall profiles block inbound traffic by default and no CoSync rule
+was present. The pairing QR reached a real Wi-Fi address, but Android QUIC
+attempts still timed out. An ephemeral listener port cannot be permitted
+without a broad inbound-UDP rule, so a stable port enables the minimal rule.
+
+**Cross-platform impact:** The pairing port is protocol-level and identical
+on Windows and Linux. Only Windows installer automation differs: Linux
+packages do not modify host firewall policy and must rely on the distribution
+or administrator's normal firewall management.
