@@ -51,6 +51,11 @@ class CosyncBridgeModule(private val context: ReactApplicationContext) : ReactCo
   }
 
   @ReactMethod
+  fun recentDiagnostics(promise: Promise) {
+    executor.execute { promise.resolve(client.recentDiagnostics()) }
+  }
+
+  @ReactMethod
   fun disconnect(promise: Promise) {
     executor.execute {
       client.disconnect()

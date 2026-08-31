@@ -36,7 +36,15 @@ export default function App() {
       onBarcodeScanned={scanned ? undefined : async ({ data }) => {
         setScanned(true);
         const result = await cosyncNative.pair(data, 'Android device');
-        setStatus(result === 'native bridge unavailable' ? 'Native Cosync bridge is unavailable in this build.' : result);
+        if (result === 'connected') {
+          setStatus('Connected to desktop.');
+          return;
+        }
+        const diagnostics = await cosyncNative.recentDiagnostics();
+        const message = result === 'native bridge unavailable'
+          ? 'Native Cosync bridge is unavailable in this build.'
+          : result;
+        setStatus(`${message}\n\nPairing diagnostics:\n${diagnostics || 'No diagnostic stages were recorded.'}`);
       }} />
     <View style={styles.overlay}>
       <Text style={styles.title}>Pair with desktop</Text>

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::cert::DeviceCertificate;
+use crate::diagnostics::{recent_pairing_stages, record_pairing_stage};
 use crate::framing::write_envelope;
 use crate::identity::DeviceIdentity;
 use crate::pairing::PairingPayload;
@@ -28,35 +29,72 @@ impl ConnectionClient {
     }
 
     pub fn pair(&self, payload_json: String, device_name: String) -> String {
+        record_pairing_stage(&self.data_dir, "pair_requested");
         let payload = match PairingPayload::from_json(&payload_json) {
             Ok(payload) => payload,
-            Err(error) => return format!("invalid pairing payload: {error}"),
+            Err(error) => {
+                record_pairing_stage(&self.data_dir, "payload_parse_failed");
+                return format!("pairing failed at payload_parse: {error}");
+            }
         };
         let result = (|| {
             std::fs::create_dir_all(&self.data_dir).map_err(|error| error.to_string())?;
+            record_pairing_stage(&self.data_dir, "identity_loading");
             let identity = DeviceIdentity::load_or_create(&self.data_dir).map_err(|error| error.to_string())?;
             let cert = DeviceCertificate::load_or_create(&self.data_dir).map_err(|error| error.to_string())?;
             let server_addr = format!("{}:{}", payload.ip_hint, payload.port).parse::<std::net::SocketAddr>().map_err(|error| format!("invalid desktop address: {error}"))?;
             let device_id = identity.fingerprint();
             let (endpoint, session) = self.runtime.block_on(async {
+                record_pairing_stage(&self.data_dir, "client_endpoint_building");
                 let endpoint = build_client_endpoint(
                     "0.0.0.0:0".parse().expect("valid mobile bind address"),
                     &cert,
                     &payload.public_key_fingerprint,
                 )
-                .map_err(|error| error.to_string())?;
-                let session = Session::connect(&endpoint, server_addr, "cosync.local").await.map_err(|error| error.to_string())?;
-                let (mut send, _recv) = session.connection.open_bi().await.map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    record_pairing_stage(&self.data_dir, "client_endpoint_build_failed");
+                    format!("client_endpoint: {error}")
+                })?;
+                record_pairing_stage(&self.data_dir, "quic_connect_started");
+                let session = Session::connect(&endpoint, server_addr, "cosync.local").await.map_err(|error| {
+                    record_pairing_stage(&self.data_dir, "quic_connect_failed");
+                    format!("quic_connect: {error}")
+                })?;
+                record_pairing_stage(&self.data_dir, "quic_connected");
+                let (mut send, _recv) = session.connection.open_bi().await.map_err(|error| {
+                    record_pairing_stage(&self.data_dir, "pairing_stream_open_failed");
+                    format!("pairing_stream_open: {error}")
+                })?;
                 let request = Envelope { device_id, logical_time: 0, physical_time_ms: 0, payload: Some(Payload::PairingRequest(PairingRequest { device_name, public_key_fingerprint: cert.fingerprint(), pairing_token: payload.pairing_token })) };
-                write_envelope(&mut send, &request).await.map_err(|error| error.to_string())?;
-                send.finish().await.map_err(|error| error.to_string())?;
+                write_envelope(&mut send, &request).await.map_err(|error| {
+                    record_pairing_stage(&self.data_dir, "pairing_request_write_failed");
+                    format!("pairing_request_write: {error}")
+                })?;
+                send.finish().await.map_err(|error| {
+                    record_pairing_stage(&self.data_dir, "pairing_request_finish_failed");
+                    format!("pairing_request_finish: {error}")
+                })?;
+                record_pairing_stage(&self.data_dir, "pairing_request_sent");
                 Ok::<(quinn::Endpoint, Session), String>((endpoint, session))
             })?;
             *self.endpoint.lock().map_err(|error| error.to_string())? = Some(endpoint);
             *self.session.lock().map_err(|error| error.to_string())? = Some(session);
             Ok::<(), String>(())
         })();
-        match result { Ok(()) => "connected".to_string(), Err(error) => format!("pairing failed: {error}") }
+        match result {
+            Ok(()) => {
+                record_pairing_stage(&self.data_dir, "pairing_connected");
+                "connected".to_string()
+            }
+            Err(error) => {
+                record_pairing_stage(&self.data_dir, "pairing_failed");
+                format!("pairing failed: {error}")
+            }
+        }
+    }
+
+    pub fn recent_diagnostics(&self) -> String {
+        recent_pairing_stages(&self.data_dir)
     }
 
     pub fn is_connected(&self) -> bool {

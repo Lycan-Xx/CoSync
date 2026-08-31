@@ -8,6 +8,7 @@
 
 pub mod cert;
 pub mod discovery;
+pub mod diagnostics;
 pub mod framing;
 pub mod hlc;
 pub mod identity;
