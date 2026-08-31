@@ -16,14 +16,14 @@ use cosync_core::{
 use rand::RngCore;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 struct AppState {
     identity: DeviceIdentity,
     cert: DeviceCertificate,
     store: AsyncMutex<PairedDeviceStore>,
     pairing_addr: SocketAddr,
-    current_pairing_token: AsyncMutex<String>,
+    current_pairing_token: watch::Sender<String>,
     connection_status: AsyncMutex<HashMap<String, bool>>,
 }
 
@@ -44,18 +44,34 @@ fn get_hostname() -> String {
     desktop_name()
 }
 
-/// Best-effort local IPv4 address to embed in the pairing QR as an
-/// `ip_hint`. Falls back to loopback if nothing better is found — better
-/// to hand the scanning device *something* than fail QR generation
-/// outright; mDNS discovery (once Milestone 4 exists) can still find the
-/// real address independently.
+/// Best-effort LAN IPv4 address to embed in the pairing QR as an `ip_hint`.
+///
+/// Prefer the address selected by the operating system's default route.
+/// Enumerating adapters alone is not reliable on Windows: virtual adapters
+/// and link-local addresses can appear before the active Wi-Fi interface,
+/// yielding a QR address an Android device cannot route to.
 fn local_ip_hint() -> String {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        // UDP connect only asks the OS to select a route; it sends no packet.
+        if socket.connect("1.1.1.1:443").is_ok() {
+            if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {
+                let ip = *addr.ip();
+                if !ip.is_unspecified() && !ip.is_loopback() && !ip.is_link_local() {
+                    return ip.to_string();
+                }
+            }
+        }
+    }
+
     if_addrs::get_if_addrs()
         .ok()
         .and_then(|addrs| {
-            addrs
-                .into_iter()
-                .find(|iface| !iface.is_loopback() && iface.addr.ip().is_ipv4())
+            addrs.into_iter().find(|iface| match iface.addr.ip() {
+                std::net::IpAddr::V4(ip) => {
+                    !iface.is_loopback() && !ip.is_unspecified() && !ip.is_link_local()
+                }
+                std::net::IpAddr::V6(_) => false,
+            })
         })
         .map(|iface| iface.addr.ip().to_string())
         .unwrap_or_else(|| "127.0.0.1".to_string())
@@ -64,7 +80,7 @@ fn local_ip_hint() -> String {
 #[tauri::command]
 async fn get_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
     let token = random_token();
-    *state.current_pairing_token.lock().await = token.clone();
+    state.current_pairing_token.send_replace(token.clone());
 
     let payload = PairingPayload {
         device_name: desktop_name(),
@@ -125,16 +141,27 @@ struct PairedDeviceWithStatus {
 /// failed/expired attempt (wrong token, nobody connects within the
 /// window) just loops back around rather than tearing anything down.
 async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
+    let mut pairing_token_updates = state.current_pairing_token.subscribe();
+
     loop {
-        let expected_token = state.current_pairing_token.lock().await.clone();
-        match accept_pairing_connection(
+        let expected_token = pairing_token_updates.borrow().clone();
+        let pairing_attempt = accept_pairing_connection(
             state.pairing_addr,
             &state.cert,
             &expected_token,
             Duration::from_secs(300),
-        )
-        .await
-        {
+        );
+
+        tokio::pin!(pairing_attempt);
+        let result = tokio::select! {
+            result = &mut pairing_attempt => result,
+            // A newly displayed QR has a new one-time token. Drop the old
+            // endpoint and bind a fresh one immediately, rather than making
+            // the scanner wait for the previous five-minute attempt window.
+            _ = pairing_token_updates.changed() => continue,
+        };
+
+        match result {
             Ok((device, _session)) => {
                 if let Err(err) = state.store.lock().await.upsert(&device) {
                     eprintln!("cosync: failed to persist paired device: {err}");
@@ -148,6 +175,7 @@ async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
 
                 let _ = app.emit("paired-device-connected", &device);
                 update_tray_tooltip(&app, &state).await;
+                state.current_pairing_token.send_replace(random_token());
             }
             Err(err) => {
                 // Timeout, token mismatch, or a dropped connection —
@@ -201,13 +229,14 @@ pub fn run() {
             let probe = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind pairing port probe");
             let pairing_addr = probe.local_addr().expect("pairing addr");
             drop(probe);
+            let (current_pairing_token, _) = watch::channel(random_token());
 
             let state = Arc::new(AppState {
                 identity,
                 cert,
                 store: AsyncMutex::new(store),
                 pairing_addr,
-                current_pairing_token: AsyncMutex::new(random_token()),
+                current_pairing_token,
                 connection_status: AsyncMutex::new(HashMap::new()),
             });
             app.manage(state.clone());

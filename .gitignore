@@ -13,6 +13,9 @@ apps/mobile/android/build/
 apps/mobile/android/.gradle/
 apps/mobile/android/local.properties
 
+# Project-local developer toolchain (JDK, Android SDK/NDK, and build caches)
+/.toolchains/
+
 # Tauri
 apps/desktop/src-tauri/target/
 
