@@ -27,6 +27,11 @@ struct AppState {
     connection_status: AsyncMutex<HashMap<String, bool>>,
 }
 
+/// Stable UDP port used by the pairing listener and advertised in the QR.
+/// A fixed port lets local firewalls permit only Cosync pairing traffic
+/// instead of requiring a broad inbound UDP exception for an ephemeral port.
+const PAIRING_PORT: u16 = 48_215;
+
 fn random_token() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -220,13 +225,11 @@ pub fn run() {
             let store = PairedDeviceStore::open(&data_dir.join("paired_devices.sqlite"))
                 .expect("open paired-device store");
 
-            // Bind the pairing listener's UDP socket now (synchronously)
-            // so we know the real port before anything (QR, mDNS, tray)
-            // needs it — the actual QUIC endpoint is (re)built per pairing
-            // attempt by `accept_pairing_connection`, but it needs to bind
-            // the *same* address every time, so we resolve that address
-            // once up front.
-            let probe = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind pairing port probe");
+            // Reserve the fixed listener port before QR generation. The
+            // pairing endpoint is rebuilt per attempt, but it always binds
+            // this same port so local firewall rules can stay narrowly scoped.
+            let probe = std::net::UdpSocket::bind(("0.0.0.0", PAIRING_PORT))
+                .expect("bind fixed pairing port");
             let pairing_addr = probe.local_addr().expect("pairing addr");
             drop(probe);
             let (current_pairing_token, _) = watch::channel(random_token());
