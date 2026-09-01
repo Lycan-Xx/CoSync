@@ -178,16 +178,18 @@ async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
 
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
-            let pairing_attempt = accept_pairing_incoming(
-                incoming,
-                &expected_token,
-                PAIRING_REQUEST_TIMEOUT,
-            );
-            tokio::pin!(pairing_attempt);
-            let result = tokio::select! {
-                result = &mut pairing_attempt => Some(result),
-                // Invalidate every in-flight attempt for an older QR token.
-                _ = token_updates.changed() => None,
+            let result = {
+                let pairing_attempt = accept_pairing_incoming(
+                    incoming,
+                    &expected_token,
+                    PAIRING_REQUEST_TIMEOUT,
+                );
+                tokio::pin!(pairing_attempt);
+                tokio::select! {
+                    result = &mut pairing_attempt => Some(result),
+                    // Invalidate every in-flight attempt for an older QR token.
+                    _ = token_updates.changed() => None,
+                }
             };
 
             match result {
