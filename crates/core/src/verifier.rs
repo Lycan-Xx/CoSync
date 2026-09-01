@@ -15,6 +15,8 @@
 //! ADR-003 for why a CA doesn't make sense in a two-device local mesh.
 
 use crate::cert::fingerprint_of_der;
+use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 /// Verifies that the server's presented certificate matches one specific
 /// expected fingerprint. Used on the client side (the device dialing a
@@ -59,6 +61,78 @@ impl rustls::client::ServerCertVerifier for PinnedServerVerifier {
 /// both directions get pinned, not just the dialer's view of the callee.
 pub struct PinnedClientVerifier {
     expected_fingerprint: String,
+}
+
+/// Thread-safe trust set used by a long-lived server endpoint. The desktop
+/// keeps one QUIC listener alive while devices are paired, so the TLS verifier
+/// must observe newly persisted certificate pins without rebinding the UDP
+/// socket and disrupting existing sessions.
+#[derive(Clone, Default)]
+pub struct TrustedClientFingerprints {
+    fingerprints: Arc<RwLock<HashSet<String>>>,
+}
+
+impl TrustedClientFingerprints {
+    pub fn new(fingerprints: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            fingerprints: Arc::new(RwLock::new(fingerprints.into_iter().collect())),
+        }
+    }
+
+    pub fn insert(&self, fingerprint: String) {
+        if let Ok(mut fingerprints) = self.fingerprints.write() {
+            fingerprints.insert(fingerprint);
+        }
+    }
+
+    pub fn remove(&self, fingerprint: &str) {
+        if let Ok(mut fingerprints) = self.fingerprints.write() {
+            fingerprints.remove(fingerprint);
+        }
+    }
+
+    fn contains(&self, fingerprint: &str) -> bool {
+        self.fingerprints
+            .read()
+            .map(|fingerprints| fingerprints.contains(fingerprint))
+            .unwrap_or(false)
+    }
+}
+
+pub struct TrustedClientsVerifier {
+    trusted: TrustedClientFingerprints,
+}
+
+impl TrustedClientsVerifier {
+    pub fn new(trusted: TrustedClientFingerprints) -> Arc<Self> {
+        Arc::new(Self { trusted })
+    }
+}
+
+impl rustls::server::ClientCertVerifier for TrustedClientsVerifier {
+    fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::server::ClientCertVerified, rustls::Error> {
+        let actual = fingerprint_of_der(&end_entity.0);
+        if self.trusted.contains(&actual) {
+            Ok(rustls::server::ClientCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "client certificate is not paired with this device".to_string(),
+            ))
+        }
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        true
+    }
 }
 
 impl PinnedClientVerifier {
@@ -111,8 +185,8 @@ impl rustls::server::ClientCertVerifier for PinnedClientVerifier {
 /// `pairing_session.rs`) — the same trust model as typing a PIN or
 /// scanning a QR code to pair a Bluetooth device or use AirDrop. Once
 /// that token is verified, the server captures the peer's *actual*
-/// certificate fingerprint from the now-authenticated exchange and pins
-/// it going forward via `PinnedClientVerifier` for every future
+/// certificate fingerprint from the now-authenticated exchange and adds it
+/// to the steady-state `TrustedClientsVerifier` for every future
 /// reconnection. This verifier is only ever used for the single,
 /// short-lived pairing-mode listener — never for a steady-state session
 /// endpoint.
@@ -196,10 +270,51 @@ mod tests {
         let verifier = PinnedClientVerifier::new(cert.fingerprint());
 
         assert!(verifier
-            .verify_client_cert(&cert.rustls_certificate(), &[], std::time::SystemTime::now())
+            .verify_client_cert(
+                &cert.rustls_certificate(),
+                &[],
+                std::time::SystemTime::now()
+            )
             .is_ok());
         assert!(verifier
-            .verify_client_cert(&other.rustls_certificate(), &[], std::time::SystemTime::now())
+            .verify_client_cert(
+                &other.rustls_certificate(),
+                &[],
+                std::time::SystemTime::now()
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn trusted_client_verifier_observes_runtime_trust_updates() {
+        let cert = DeviceCertificate::generate().expect("generate");
+        let trusted = TrustedClientFingerprints::default();
+        let verifier = TrustedClientsVerifier::new(trusted.clone());
+
+        assert!(verifier
+            .verify_client_cert(
+                &cert.rustls_certificate(),
+                &[],
+                std::time::SystemTime::now()
+            )
+            .is_err());
+
+        trusted.insert(cert.fingerprint());
+        assert!(verifier
+            .verify_client_cert(
+                &cert.rustls_certificate(),
+                &[],
+                std::time::SystemTime::now()
+            )
+            .is_ok());
+
+        trusted.remove(&cert.fingerprint());
+        assert!(verifier
+            .verify_client_cert(
+                &cert.rustls_certificate(),
+                &[],
+                std::time::SystemTime::now()
+            )
             .is_err());
     }
 }

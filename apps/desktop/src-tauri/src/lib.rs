@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cosync_core::{
-    accept_pairing_incoming, build_pairing_server_endpoint, default_app_data_dir,
-    DeviceCertificate, DeviceIdentity, PairedDevice, PairedDeviceStore, PairingPayload, Session,
+    accept_pairing_incoming, accept_reconnect_incoming, build_pairing_server_endpoint,
+    build_trusted_server_endpoint, default_app_data_dir, DeviceCertificate, DeviceIdentity,
+    Discovery, PairedDevice, PairedDeviceStore, PairingPayload, Session, TrustedClientFingerprints,
 };
 use rand::RngCore;
 use tauri::{Emitter, Manager};
@@ -23,17 +24,22 @@ struct AppState {
     cert: DeviceCertificate,
     store: AsyncMutex<PairedDeviceStore>,
     pairing_addr: SocketAddr,
+    session_addr: SocketAddr,
     current_pairing_token: watch::Sender<String>,
+    trusted_clients: TrustedClientFingerprints,
     connection_status: AsyncMutex<HashMap<String, bool>>,
     sessions: AsyncMutex<HashMap<String, Session>>,
     pairing_commit: AsyncMutex<()>,
+    _discovery: Option<Discovery>,
 }
 
 /// Stable UDP port used by the pairing listener and advertised in the QR.
 /// A fixed port lets local firewalls permit only Cosync pairing traffic
 /// instead of requiring a broad inbound UDP exception for an ephemeral port.
 const PAIRING_PORT: u16 = 48_215;
+const SESSION_PORT: u16 = 48_216;
 const PAIRING_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const RECONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_PAIRING_ATTEMPTS: usize = 8;
 
 fn random_token() -> String {
@@ -97,6 +103,7 @@ async fn get_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<String
         device_name: desktop_name(),
         public_key_fingerprint: state.cert.fingerprint(),
         ip_hint: local_ip_hint(),
+        session_port: Some(state.session_addr.port()),
         port: state.pairing_addr.port(),
         pairing_token: token,
     };
@@ -179,11 +186,8 @@ async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
             let result = {
-                let pairing_attempt = accept_pairing_incoming(
-                    incoming,
-                    &expected_token,
-                    PAIRING_REQUEST_TIMEOUT,
-                );
+                let pairing_attempt =
+                    accept_pairing_incoming(incoming, &expected_token, PAIRING_REQUEST_TIMEOUT);
                 tokio::pin!(pairing_attempt);
                 tokio::select! {
                     result = &mut pairing_attempt => Some(result),
@@ -200,6 +204,62 @@ async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
                     eprintln!("cosync: pairing attempt did not complete: {err}");
                 }
                 None => {}
+            }
+        });
+    }
+}
+
+/// Accept steady-state sessions on a separate endpoint whose TLS verifier
+/// only permits certificates already present in the paired-device store.
+async fn run_session_listener(app: tauri::AppHandle, state: Arc<AppState>) {
+    let endpoint = match build_trusted_server_endpoint(
+        state.session_addr,
+        &state.cert,
+        state.trusted_clients.clone(),
+    ) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            eprintln!("cosync: trusted session listener failed to start: {err}");
+            return;
+        }
+    };
+    let session_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_PAIRING_ATTEMPTS));
+
+    while let Some(incoming) = endpoint.accept().await {
+        let permit = match session_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(incoming);
+                continue;
+            }
+        };
+        let session_app = app.clone();
+        let session_state = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let _permit = permit;
+            match accept_reconnect_incoming(incoming, RECONNECT_REQUEST_TIMEOUT).await {
+                Ok((device_id, session)) => {
+                    let device = session_state.store.lock().await.get(&device_id);
+                    match device {
+                        Ok(Some(device)) => {
+                            register_session(session_app, session_state, device, session).await;
+                        }
+                        Ok(None) => {
+                            session
+                                .connection
+                                .close(0u32.into(), b"device is no longer paired");
+                        }
+                        Err(err) => {
+                            eprintln!("cosync: failed to load reconnecting device: {err}");
+                            session
+                                .connection
+                                .close(0u32.into(), b"paired-device store failed");
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("cosync: trusted reconnect did not complete: {err}");
+                }
             }
         });
     }
@@ -230,6 +290,9 @@ async fn complete_pairing(
             .await;
         return;
     }
+    state
+        .trusted_clients
+        .insert(device.cert_fingerprint.clone());
 
     let (device, session) = match pending.acknowledge().await {
         Ok(accepted) => accepted,
@@ -238,6 +301,18 @@ async fn complete_pairing(
             return;
         }
     };
+    state.current_pairing_token.send_replace(random_token());
+    drop(commit);
+
+    register_session(app, state, device, session).await;
+}
+
+async fn register_session(
+    app: tauri::AppHandle,
+    state: Arc<AppState>,
+    device: PairedDevice,
+    session: Session,
+) {
     let device_id = device.device_id.clone();
     let connection = session.connection.clone();
     let connection_id = connection.stable_id();
@@ -250,15 +325,13 @@ async fn complete_pairing(
     {
         replaced
             .connection
-            .close(0u32.into(), b"superseded pairing session");
+            .close(0u32.into(), b"superseded trusted session");
     }
     state
         .connection_status
         .lock()
         .await
         .insert(device_id.clone(), true);
-    state.current_pairing_token.send_replace(random_token());
-    drop(commit);
 
     let _ = app.emit("paired-device-connected", &device);
     update_tray_tooltip(&app, &state).await;
@@ -324,25 +397,57 @@ pub fn run() {
             let cert = DeviceCertificate::load_or_create(&data_dir).expect("load/create cert");
             let store = PairedDeviceStore::open(&data_dir.join("paired_devices.sqlite"))
                 .expect("open paired-device store");
+            let trusted_clients = TrustedClientFingerprints::new(
+                store
+                    .list_all()
+                    .expect("load paired-device trust set")
+                    .into_iter()
+                    .map(|device| device.cert_fingerprint),
+            );
 
-            // Reserve the fixed listener port before QR generation. The
-            // listener creates one long-lived endpoint on this address so
-            // local firewall rules can stay narrowly scoped.
-            let probe = std::net::UdpSocket::bind(("0.0.0.0", PAIRING_PORT))
+            // Reserve both fixed ports before QR generation. Pairing accepts
+            // a new certificate plus one-time token; steady-state sessions use
+            // a separate TLS listener restricted to persisted fingerprints.
+            let pairing_probe = std::net::UdpSocket::bind(("0.0.0.0", PAIRING_PORT))
                 .expect("bind fixed pairing port");
-            let pairing_addr = probe.local_addr().expect("pairing addr");
-            drop(probe);
+            let pairing_addr = pairing_probe.local_addr().expect("pairing addr");
+            let session_probe = std::net::UdpSocket::bind(("0.0.0.0", SESSION_PORT))
+                .expect("bind fixed trusted-session port");
+            let session_addr = session_probe.local_addr().expect("session addr");
+            drop(pairing_probe);
+            drop(session_probe);
             let (current_pairing_token, _) = watch::channel(random_token());
+            let discovery = match Discovery::new() {
+                Ok(mut discovery) => match discovery.advertise(
+                    &cert.fingerprint(),
+                    &desktop_name(),
+                    session_addr.port(),
+                ) {
+                    Ok(()) => Some(discovery),
+                    Err(err) => {
+                        eprintln!("cosync: failed to advertise trusted session: {err}");
+                        let _ = discovery.shutdown();
+                        None
+                    }
+                },
+                Err(err) => {
+                    eprintln!("cosync: failed to start LAN discovery: {err}");
+                    None
+                }
+            };
 
             let state = Arc::new(AppState {
                 identity,
                 cert,
                 store: AsyncMutex::new(store),
                 pairing_addr,
+                session_addr,
                 current_pairing_token,
+                trusted_clients,
                 connection_status: AsyncMutex::new(HashMap::new()),
                 sessions: AsyncMutex::new(HashMap::new()),
                 pairing_commit: AsyncMutex::new(()),
+                _discovery: discovery,
             });
             app.manage(state.clone());
 
@@ -391,6 +496,11 @@ pub fn run() {
             let listener_state = state.clone();
             tauri::async_runtime::spawn(async move {
                 run_pairing_listener(app_handle, listener_state).await;
+            });
+            let app_handle = app.handle().clone();
+            let listener_state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                run_session_listener(app_handle, listener_state).await;
             });
 
             let _ = identity_and_cert_are_ready(&state);

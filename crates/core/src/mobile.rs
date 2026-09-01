@@ -1,15 +1,23 @@
 //! Android-facing connection object for Milestone 4A.
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::cert::DeviceCertificate;
 use crate::diagnostics::{recent_pairing_stages, record_pairing_stage};
+use crate::discovery::Discovery;
 use crate::framing::write_envelope;
+use crate::paired_devices::{PairedDevice, PairedDeviceStore};
 use crate::pairing::PairingPayload;
 use crate::pairing_session::read_pairing_ack;
 use crate::proto::{envelope::Payload, Envelope, PairingRequest};
+use crate::reconnect_session::dial_reconnect;
 use crate::transport::{build_client_endpoint, Session};
+
+const RECONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const DISCOVERY_WINDOW: Duration = Duration::from_secs(4);
 
 pub struct ConnectionClient {
     data_dir: PathBuf,
@@ -40,13 +48,22 @@ impl ConnectionClient {
                 return format!("pairing failed at payload_parse: {error}");
             }
         };
+        let reconnect_port = payload.session_port.unwrap_or(payload.port);
+        let desktop = PairedDevice {
+            device_id: payload.public_key_fingerprint.clone(),
+            device_name: payload.device_name.clone(),
+            cert_fingerprint: payload.public_key_fingerprint.clone(),
+            last_known_ip: Some(payload.ip_hint.clone()),
+            last_known_port: Some(reconnect_port),
+        };
+
         let result = (|| {
             std::fs::create_dir_all(&self.data_dir).map_err(|error| error.to_string())?;
             record_pairing_stage(&self.data_dir, "certificate_loading");
             let cert = DeviceCertificate::load_or_create(&self.data_dir)
                 .map_err(|error| error.to_string())?;
             let server_addr = format!("{}:{}", payload.ip_hint, payload.port)
-                .parse::<std::net::SocketAddr>()
+                .parse::<SocketAddr>()
                 .map_err(|error| format!("invalid desktop address: {error}"))?;
             let device_id = cert.fingerprint();
             let (endpoint, session) = self.runtime.block_on(async {
@@ -99,24 +116,11 @@ impl ConnectionClient {
                 record_pairing_stage(&self.data_dir, "pairing_ack_received");
                 Ok::<(quinn::Endpoint, Session), String>((endpoint, session))
             })?;
-            let mut session_slot = self.session.lock().map_err(|error| error.to_string())?;
-            let mut endpoint_slot = self.endpoint.lock().map_err(|error| error.to_string())?;
-            let replaced_session = session_slot.replace(session);
-            let replaced_endpoint = endpoint_slot.replace(endpoint);
-            drop(endpoint_slot);
-            drop(session_slot);
 
-            // Disconnect displaced handles explicitly. A disconnect monitor
-            // intentionally owns a connection clone, so dropping only the
-            // stored Session would otherwise keep the old QUIC tunnel alive.
-            if let Some(session) = replaced_session {
-                session
-                    .connection
-                    .close(0u32.into(), b"superseded pairing session");
-            }
-            if let Some(endpoint) = replaced_endpoint {
-                endpoint.close(0u32.into(), b"superseded pairing endpoint");
-            }
+            self.open_store()?
+                .upsert(&desktop)
+                .map_err(|error| error.to_string())?;
+            self.replace_connection(endpoint, session)?;
             Ok::<(), String>(())
         })();
         match result {
@@ -128,6 +132,64 @@ impl ConnectionClient {
                 record_pairing_stage(&self.data_dir, "pairing_failed");
                 format!("pairing failed: {error}")
             }
+        }
+    }
+
+    /// Whether Android has a persisted desktop trust record. This decides
+    /// whether app startup should resume the foreground connection service.
+    pub fn has_paired_device(&self) -> bool {
+        self.open_store()
+            .and_then(|store| store.list_all().map_err(|error| error.to_string()))
+            .map(|devices| !devices.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Make one bounded reconnect attempt. Android schedules this method with
+    /// exponential backoff and wakes it immediately from network callbacks;
+    /// there is no idle status polling.
+    pub fn reconnect(&self) -> String {
+        if self.is_connected() {
+            return "connected".to_string();
+        }
+
+        record_pairing_stage(&self.data_dir, "reconnect_requested");
+        let devices = match self
+            .open_store()
+            .and_then(|store| store.list_all().map_err(|error| error.to_string()))
+        {
+            Ok(devices) if !devices.is_empty() => devices,
+            Ok(_) => return "not paired".to_string(),
+            Err(_) => {
+                record_pairing_stage(&self.data_dir, "reconnect_store_failed");
+                return "reconnect failed".to_string();
+            }
+        };
+
+        // The saved address is the low-latency path for the common case.
+        for device in &devices {
+            if let (Some(ip), Some(port)) = (&device.last_known_ip, device.last_known_port) {
+                if let Ok(ip) = ip.parse::<IpAddr>() {
+                    if self
+                        .connect_paired_device(device, SocketAddr::new(ip, port))
+                        .is_ok()
+                    {
+                        record_pairing_stage(&self.data_dir, "reconnect_connected");
+                        return "connected".to_string();
+                    }
+                }
+            }
+        }
+
+        // If DHCP changed the desktop address, discover only already-trusted
+        // device IDs on the LAN. Kotlin holds WifiManager.MulticastLock while
+        // this bounded method runs.
+        record_pairing_stage(&self.data_dir, "reconnect_discovery_started");
+        if self.reconnect_via_discovery(&devices) {
+            record_pairing_stage(&self.data_dir, "reconnect_connected");
+            "connected".to_string()
+        } else {
+            record_pairing_stage(&self.data_dir, "reconnect_failed");
+            "reconnect failed".to_string()
         }
     }
 
@@ -151,11 +213,11 @@ impl ConnectionClient {
     /// a dedicated monitor executor, giving it an event-driven disconnect
     /// signal without periodic JNI/UniFFI polling.
     pub fn wait_for_disconnect(&self) {
-        let connection = self.session.lock().ok().and_then(|session| {
-            session
-                .as_ref()
-                .map(|session| session.connection.clone())
-        });
+        let connection = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|session| session.as_ref().map(|session| session.connection.clone()));
         if let Some(connection) = connection {
             self.runtime.block_on(async {
                 connection.closed().await;
@@ -174,5 +236,116 @@ impl ConnectionClient {
                 endpoint.close(0u32.into(), b"user disconnect");
             }
         }
+    }
+
+    fn open_store(&self) -> Result<PairedDeviceStore, String> {
+        PairedDeviceStore::open(&self.data_dir.join("paired_devices.sqlite"))
+            .map_err(|error| error.to_string())
+    }
+
+    fn replace_connection(
+        &self,
+        endpoint: quinn::Endpoint,
+        session: Session,
+    ) -> Result<(), String> {
+        let mut session_slot = self.session.lock().map_err(|error| error.to_string())?;
+        let mut endpoint_slot = self.endpoint.lock().map_err(|error| error.to_string())?;
+        let replaced_session = session_slot.replace(session);
+        let replaced_endpoint = endpoint_slot.replace(endpoint);
+        drop(endpoint_slot);
+        drop(session_slot);
+
+        // A disconnect monitor owns a connection clone, so explicitly close
+        // displaced handles instead of relying on Drop.
+        if let Some(session) = replaced_session {
+            session
+                .connection
+                .close(0u32.into(), b"superseded connection");
+        }
+        if let Some(endpoint) = replaced_endpoint {
+            endpoint.close(0u32.into(), b"superseded endpoint");
+        }
+        Ok(())
+    }
+
+    fn connect_paired_device(
+        &self,
+        device: &PairedDevice,
+        server_addr: SocketAddr,
+    ) -> Result<(), String> {
+        if !server_addr.is_ipv4() {
+            return Err("IPv6 reconnect is not enabled yet".to_string());
+        }
+        let cert =
+            DeviceCertificate::load_or_create(&self.data_dir).map_err(|error| error.to_string())?;
+        let endpoint = build_client_endpoint(
+            "0.0.0.0:0".parse().expect("valid mobile bind address"),
+            &cert,
+            &device.cert_fingerprint,
+        )
+        .map_err(|error| error.to_string())?;
+        let session = self
+            .runtime
+            .block_on(dial_reconnect(
+                &endpoint,
+                server_addr,
+                &cert.fingerprint(),
+                RECONNECT_HANDSHAKE_TIMEOUT,
+            ))
+            .map_err(|error| error.to_string())?;
+
+        let mut updated = device.clone();
+        updated.last_known_ip = Some(server_addr.ip().to_string());
+        updated.last_known_port = Some(server_addr.port());
+        self.open_store()?
+            .upsert(&updated)
+            .map_err(|error| error.to_string())?;
+        self.replace_connection(endpoint, session)?;
+        Ok(())
+    }
+
+    fn reconnect_via_discovery(&self, devices: &[PairedDevice]) -> bool {
+        let discovery = match Discovery::new() {
+            Ok(discovery) => discovery,
+            Err(_) => return false,
+        };
+        let receiver = match discovery.browse() {
+            Ok(receiver) => receiver,
+            Err(_) => {
+                let _ = discovery.shutdown();
+                return false;
+            }
+        };
+        let deadline = Instant::now() + DISCOVERY_WINDOW;
+        let mut connected = false;
+
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            let peer = match receiver.recv_timeout(remaining) {
+                Ok(peer) => peer,
+                Err(_) => break,
+            };
+            let Some(device) = devices
+                .iter()
+                .find(|device| device.device_id == peer.device_id)
+            else {
+                continue;
+            };
+
+            for ip in peer.addresses.into_iter().filter(IpAddr::is_ipv4) {
+                if self
+                    .connect_paired_device(device, SocketAddr::new(ip, peer.port))
+                    .is_ok()
+                {
+                    connected = true;
+                    break;
+                }
+            }
+            if connected {
+                break;
+            }
+        }
+
+        let _ = discovery.shutdown();
+        connected
     }
 }

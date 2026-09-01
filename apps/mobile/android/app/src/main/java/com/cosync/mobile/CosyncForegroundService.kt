@@ -9,7 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 
-/** Keeps the future long-lived Cosync session alive while the app is backgrounded. */
+/** Owns the process lifetime for the persistent trusted Cosync session. */
 class CosyncForegroundService : Service() {
   companion object {
     const val ACTION_STOP = "com.cosync.mobile.STOP_CONNECTION"
@@ -20,36 +20,60 @@ class CosyncForegroundService : Service() {
       Intent(context, CosyncForegroundService::class.java)
   }
 
+  private lateinit var connectionManager: CosyncConnectionManager
+  private val statusListener: (Boolean) -> Unit = { connected ->
+    getSystemService(NotificationManager::class.java)
+      .notify(NOTIFICATION_ID, buildNotification(connected))
+  }
+
   override fun onCreate() {
     super.onCreate()
-    val manager = getSystemService(NotificationManager::class.java)
-    manager.createNotificationChannel(
+    val notificationManager = getSystemService(NotificationManager::class.java)
+    notificationManager.createNotificationChannel(
       NotificationChannel(CHANNEL_ID, "Cosync connection", NotificationManager.IMPORTANCE_LOW)
     )
+    connectionManager = CosyncConnectionManager.get(this)
+    connectionManager.addListener(statusListener)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
+      connectionManager.stop()
       stopForeground(STOP_FOREGROUND_REMOVE)
       stopSelf()
       return START_NOT_STICKY
     }
 
-    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-    val pendingIntent = launchIntent?.let {
-      PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-    }
-    val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle("Cosync connected")
-      .setContentText("Your paired devices are available")
-      .setOngoing(true)
-      .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
-      .build()
-    startForeground(NOTIFICATION_ID, notification)
+    startForeground(NOTIFICATION_ID, buildNotification(connectionManager.isConnected()))
+    connectionManager.start()
     return START_STICKY
+  }
+
+  override fun onDestroy() {
+    connectionManager.removeListener(statusListener)
+    super.onDestroy()
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
+  private fun buildNotification(connected: Boolean): Notification {
+    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+    val pendingIntent = launchIntent?.let {
+      PendingIntent.getActivity(
+        this,
+        0,
+        it,
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+      )
+    }
+    return NotificationCompat.Builder(this, CHANNEL_ID)
+      .setSmallIcon(android.R.drawable.stat_sys_upload)
+      .setContentTitle(if (connected) "Cosync connected" else "Cosync reconnecting")
+      .setContentText(
+        if (connected) "Your paired desktop is available" else "Waiting for your paired desktop"
+      )
+      .setOngoing(true)
+      .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+      .build()
+  }
 }

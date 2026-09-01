@@ -319,6 +319,7 @@ mod tests {
                 device_name: "Sani's Desktop".to_string(),
                 public_key_fingerprint: server_cert.fingerprint(),
                 ip_hint: bind_addr.ip().to_string(),
+                session_port: None,
                 port: bind_addr.port(),
                 pairing_token: token,
             };
@@ -378,6 +379,7 @@ mod tests {
                 device_name: "Sani's Desktop".to_string(),
                 public_key_fingerprint: server_cert.fingerprint(),
                 ip_hint: bind_addr.ip().to_string(),
+                session_port: None,
                 port: bind_addr.port(),
                 pairing_token: "a-guessed-wrong-token".to_string(),
             };
@@ -428,6 +430,7 @@ mod tests {
                 device_name: "Desktop".to_string(),
                 public_key_fingerprint: server_cert.fingerprint(),
                 ip_hint: bind_addr.ip().to_string(),
+                session_port: None,
                 port: bind_addr.port(),
                 pairing_token: token,
             };
@@ -490,6 +493,7 @@ mod tests {
                 device_name: "Desktop".to_string(),
                 public_key_fingerprint: server_cert.fingerprint(),
                 ip_hint: bind_addr.ip().to_string(),
+                session_port: None,
                 port: bind_addr.port(),
                 pairing_token: token,
             };
@@ -655,6 +659,7 @@ mod tests {
                 device_name: "Desktop".to_string(),
                 public_key_fingerprint: server_cert.fingerprint(),
                 ip_hint: bind_addr.ip().to_string(),
+                session_port: None,
                 port: bind_addr.port(),
                 pairing_token: token,
             };

@@ -12,7 +12,7 @@
 //! packets without it. This crate can't take that lock itself (it's an
 //! Android API, not something reachable from pure Rust) — it's the
 //! mobile bridge's responsibility to acquire it before calling
-//! `Discovery::start` and release it after `stop`.
+//! [`Discovery::browse`] and release it after [`Discovery::shutdown`].
 
 use std::net::IpAddr;
 
@@ -61,8 +61,21 @@ impl Discovery {
         device_name: &str,
         port: u16,
     ) -> Result<(), DiscoveryError> {
-        let hostname = format!("{device_id}.local.");
-        self.instance_name = device_id.to_string();
+        // Certificate fingerprints are 64 characters, while one DNS label
+        // may contain at most 63 bytes. Keep the full authenticated ID in TXT
+        // data and use a short deterministic label only for DNS routing.
+        let label_suffix: String = device_id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(40)
+            .collect();
+        let label_suffix = if label_suffix.is_empty() {
+            "device".to_string()
+        } else {
+            label_suffix
+        };
+        self.instance_name = format!("cosync-{label_suffix}");
+        let hostname = format!("{}.local.", self.instance_name);
 
         let properties = [("device_id", device_id), ("device_name", device_name)];
 
@@ -94,7 +107,7 @@ impl Discovery {
     /// platform expects.
     pub fn browse(&self) -> Result<std::sync::mpsc::Receiver<DiscoveredPeer>, DiscoveryError> {
         let receiver = self.daemon.browse(SERVICE_TYPE)?;
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(32);
 
         std::thread::spawn(move || {
             while let Ok(event) = receiver.recv() {
@@ -115,8 +128,11 @@ impl Discovery {
                         port: info.get_port(),
                     };
 
-                    if tx.send(peer).is_err() {
-                        break; // receiver dropped, stop forwarding
+                    match tx.try_send(peer) {
+                        Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            break; // receiver dropped, stop forwarding
+                        }
                     }
                 }
             }
@@ -169,6 +185,15 @@ mod tests {
             .advertise("test-device-id", "Test Device", 53317)
             .expect("advertise succeeds");
         discovery.stop_advertising().expect("stop advertising");
+        discovery.shutdown().expect("clean shutdown");
+    }
+
+    #[test]
+    fn certificate_fingerprint_fits_mdns_labels() {
+        let mut discovery = Discovery::new().expect("daemon starts");
+        discovery
+            .advertise(&"ab".repeat(32), "Test Device", 53317)
+            .expect("64-character fingerprint is advertised with a short DNS label");
         discovery.shutdown().expect("clean shutdown");
     }
 }

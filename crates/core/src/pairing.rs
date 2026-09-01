@@ -21,6 +21,11 @@ pub struct PairingPayload {
     /// Best-effort IP hint so the scanning device can dial directly
     /// instead of waiting for mDNS discovery to find it independently.
     pub ip_hint: String,
+    /// Port used for normal mutually-authenticated sessions after the
+    /// one-time pairing exchange has completed. Older payloads omit this,
+    /// in which case clients fall back to `port` for compatibility.
+    #[serde(default)]
+    pub session_port: Option<u16>,
     pub port: u16,
     /// One-time token proving "this QR scan happened," not a long-term
     /// secret — the fingerprint pinning is what actually secures the
@@ -47,6 +52,7 @@ mod tests {
             device_name: "Sani's Desktop".to_string(),
             public_key_fingerprint: "deadbeef".repeat(8),
             ip_hint: "192.168.1.42".to_string(),
+            session_port: Some(48_216),
             port: 53317,
             pairing_token: "one-time-token-abc123".to_string(),
         }

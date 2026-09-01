@@ -133,13 +133,17 @@ succeed?" check that doesn't account for it.
 
 ---
 
-## ADR-006: Fixed pairing port with a scoped Windows installer firewall rule
+## ADR-006: Fixed local connection ports with a scoped Windows installer firewall rule
 
 **Status:** Accepted
 
-**Decision:** CoSync pairing uses UDP port 48215. The Windows NSIS
+**Decision:** CoSync uses UDP port 48215 for one-time pairing and UDP port
+48216 for steady-state mutually pinned sessions. Separating them keeps the
+pairing listener's token-gated certificate bootstrap isolated from the
+long-lived listener, whose TLS verifier accepts only fingerprints already in
+the paired-device store. The Windows NSIS
 installer runs per-machine and adds a firewall exception restricted to the
-installed CoSync executable, that UDP port, Private profiles, and the local
+installed CoSync executable, those two UDP ports, Private profiles, and the local
 subnet. The uninstaller removes the rule.
 
 The rule is configured in the NSIS pre-install hook, before application files,
@@ -153,7 +157,7 @@ was present. The pairing QR reached a real Wi-Fi address, but Android QUIC
 attempts still timed out. An ephemeral listener port cannot be permitted
 without a broad inbound-UDP rule, so a stable port enables the minimal rule.
 
-**Cross-platform impact:** The pairing port is protocol-level and identical
-on Windows and Linux. Only Windows installer automation differs: Linux
+**Cross-platform impact:** Both ports are protocol-level and identical on
+Windows and Linux. Only Windows installer automation differs: Linux
 packages do not modify host firewall policy and must rely on the distribution
 or administrator's normal firewall management.

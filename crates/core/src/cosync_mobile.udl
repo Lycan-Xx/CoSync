@@ -4,6 +4,8 @@ namespace cosync_mobile {
 interface ConnectionClient {
   constructor(string data_dir);
   string pair(string payload_json, string device_name);
+  boolean has_paired_device();
+  string reconnect();
   string recent_diagnostics();
   boolean is_connected();
   void wait_for_disconnect();

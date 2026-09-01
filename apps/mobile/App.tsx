@@ -7,20 +7,23 @@ import { cosyncNative } from './src/native/cosync';
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState('Scan a Cosync pairing QR code.');
 
   useEffect(() => {
-    if (!scanned) return;
     let mounted = true;
     cosyncNative.isConnected().then((connected) => {
-      if (mounted && connected) setStatus('Connected to desktop.');
+      if (!mounted) return;
+      setConnected(connected);
+      if (connected) setStatus('Connected to desktop.');
     });
     const subscription = cosyncNative.onConnectionState((connected) => {
+      setConnected(connected);
       if (connected) setStatus('Connected to desktop.');
       else setStatus('Disconnected from desktop.');
     });
     return () => { mounted = false; subscription.remove(); };
-  }, [scanned]);
+  }, []);
 
   if (!permission) return <View style={styles.center}><Text>Requesting camera permission…</Text></View>;
   if (!permission.granted) return <View style={styles.center}>
@@ -42,6 +45,7 @@ export default function App() {
           result = `pairing failed: ${error instanceof Error ? error.message : String(error)}`;
         }
         if (result === 'connected') {
+          setConnected(true);
           setStatus('Connected to desktop.');
           return;
         }
@@ -54,14 +58,24 @@ export default function App() {
         const message = result === 'native bridge unavailable'
           ? 'Native Cosync bridge is unavailable in this build.'
           : result;
-        setStatus(`${message}\n\nPairing diagnostics:\n${diagnostics || 'No diagnostic stages were recorded.'}`);
+        const currentConnection = await cosyncNative.isConnected();
+        setConnected(currentConnection);
+        const connectionNote = currentConnection
+          ? '\n\nYour existing desktop connection remains active.'
+          : '';
+        setStatus(`${message}${connectionNote}\n\nPairing diagnostics:\n${diagnostics || 'No diagnostic stages were recorded.'}`);
       }} />
     <View style={styles.overlay}>
       <Text style={styles.title}>Pair with desktop</Text>
       <ScrollView style={styles.statusScroll} contentContainerStyle={styles.statusContent} nestedScrollEnabled>
         <Text style={styles.body}>{status}</Text>
       </ScrollView>
-      {scanned && <Button title="Scan another code" onPress={() => { setScanned(false); setStatus('Scan a Cosync pairing QR code.'); }} />}
+      {scanned && <Button title="Scan another code" onPress={() => {
+        setScanned(false);
+        setStatus(connected
+          ? 'Connected to desktop. Scanning another code will keep this connection active.'
+          : 'Scan a Cosync pairing QR code.');
+      }} />}
     </View>
     <StatusBar style="light" />
   </View>;

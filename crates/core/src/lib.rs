@@ -15,6 +15,7 @@ pub mod identity;
 pub mod paired_devices;
 pub mod pairing;
 pub mod pairing_session;
+pub mod reconnect_session;
 pub mod transport;
 pub mod verifier;
 
@@ -43,7 +44,9 @@ pub use pairing_session::{
     accept_pairing_connection, accept_pairing_incoming, dial_and_send_pairing_request,
     read_pairing_ack, PairingError, PendingPairing,
 };
-pub use transport::{build_pairing_server_endpoint, Session};
+pub use reconnect_session::{accept_reconnect_incoming, dial_reconnect, ReconnectError};
+pub use transport::{build_pairing_server_endpoint, build_trusted_server_endpoint, Session};
+pub use verifier::TrustedClientFingerprints;
 
 #[cfg(test)]
 mod envelope_tests {
