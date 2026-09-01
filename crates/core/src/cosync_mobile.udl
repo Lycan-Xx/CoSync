@@ -6,5 +6,6 @@ interface ConnectionClient {
   string pair(string payload_json, string device_name);
   string recent_diagnostics();
   boolean is_connected();
+  void wait_for_disconnect();
   void disconnect();
 };

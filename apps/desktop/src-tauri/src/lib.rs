@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cosync_core::{
-    accept_pairing_connection, default_app_data_dir, DeviceCertificate, DeviceIdentity,
-    PairedDevice, PairedDeviceStore, PairingPayload,
+    accept_pairing_incoming, build_pairing_server_endpoint, default_app_data_dir,
+    DeviceCertificate, DeviceIdentity, PairedDevice, PairedDeviceStore, PairingPayload, Session,
 };
 use rand::RngCore;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-use tokio::sync::{watch, Mutex as AsyncMutex};
+use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore};
 
 struct AppState {
     identity: DeviceIdentity,
@@ -25,12 +25,16 @@ struct AppState {
     pairing_addr: SocketAddr,
     current_pairing_token: watch::Sender<String>,
     connection_status: AsyncMutex<HashMap<String, bool>>,
+    sessions: AsyncMutex<HashMap<String, Session>>,
+    pairing_commit: AsyncMutex<()>,
 }
 
 /// Stable UDP port used by the pairing listener and advertised in the QR.
 /// A fixed port lets local firewalls permit only Cosync pairing traffic
 /// instead of requiring a broad inbound UDP exception for an ephemeral port.
 const PAIRING_PORT: u16 = 48_215;
+const PAIRING_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONCURRENT_PAIRING_ATTEMPTS: usize = 8;
 
 fn random_token() -> String {
     let mut bytes = [0u8; 16];
@@ -84,8 +88,10 @@ fn local_ip_hint() -> String {
 
 #[tauri::command]
 async fn get_pairing_qr(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let commit = state.pairing_commit.lock().await;
     let token = random_token();
     state.current_pairing_token.send_replace(token.clone());
+    drop(commit);
 
     let payload = PairingPayload {
         device_name: desktop_name(),
@@ -146,49 +152,141 @@ struct PairedDeviceWithStatus {
 /// failed/expired attempt (wrong token, nobody connects within the
 /// window) just loops back around rather than tearing anything down.
 async fn run_pairing_listener(app: tauri::AppHandle, state: Arc<AppState>) {
-    let mut pairing_token_updates = state.current_pairing_token.subscribe();
+    let endpoint = match build_pairing_server_endpoint(state.pairing_addr, &state.cert) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            eprintln!("cosync: pairing listener failed to start: {err}");
+            return;
+        }
+    };
+    let pairing_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_PAIRING_ATTEMPTS));
 
-    loop {
-        let expected_token = pairing_token_updates.borrow().clone();
-        let pairing_attempt = accept_pairing_connection(
-            state.pairing_addr,
-            &state.cert,
-            &expected_token,
-            Duration::from_secs(300),
-        );
+    while let Some(incoming) = endpoint.accept().await {
+        let permit = match pairing_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Bound memory and handshake work under a burst or hostile
+                // LAN peer. Dropping the incoming connection rejects it.
+                drop(incoming);
+                continue;
+            }
+        };
+        let mut token_updates = state.current_pairing_token.subscribe();
+        let expected_token = token_updates.borrow_and_update().clone();
+        let attempt_app = app.clone();
+        let attempt_state = state.clone();
 
-        tokio::pin!(pairing_attempt);
-        let result = tokio::select! {
-            result = &mut pairing_attempt => result,
-            // A newly displayed QR has a new one-time token. Drop the old
-            // endpoint and bind a fresh one immediately, rather than making
-            // the scanner wait for the previous five-minute attempt window.
-            _ = pairing_token_updates.changed() => continue,
+        tauri::async_runtime::spawn(async move {
+            let _permit = permit;
+            let pairing_attempt = accept_pairing_incoming(
+                incoming,
+                &expected_token,
+                PAIRING_REQUEST_TIMEOUT,
+            );
+            tokio::pin!(pairing_attempt);
+            let result = tokio::select! {
+                result = &mut pairing_attempt => Some(result),
+                // Invalidate every in-flight attempt for an older QR token.
+                _ = token_updates.changed() => None,
+            };
+
+            match result {
+                Some(Ok(pending)) => {
+                    complete_pairing(attempt_app, attempt_state, pending, expected_token).await;
+                }
+                Some(Err(err)) => {
+                    eprintln!("cosync: pairing attempt did not complete: {err}");
+                }
+                None => {}
+            }
+        });
+    }
+}
+
+async fn complete_pairing(
+    app: tauri::AppHandle,
+    state: Arc<AppState>,
+    pending: cosync_core::PendingPairing,
+    expected_token: String,
+) {
+    // Only one validated attempt may commit a given one-time token. This
+    // closes the race where two concurrent peers validate just before the
+    // first successful attempt rotates the token.
+    let commit = state.pairing_commit.lock().await;
+    if state.current_pairing_token.borrow().as_str() != expected_token.as_str() {
+        drop(commit);
+        let _ = pending.reject("pairing code is no longer valid").await;
+        return;
+    }
+
+    let device = pending.device().clone();
+    if let Err(err) = state.store.lock().await.upsert(&device) {
+        eprintln!("cosync: failed to persist paired device: {err}");
+        drop(commit);
+        let _ = pending
+            .reject("desktop could not persist the paired device")
+            .await;
+        return;
+    }
+
+    let (device, session) = match pending.acknowledge().await {
+        Ok(accepted) => accepted,
+        Err(err) => {
+            eprintln!("cosync: failed to acknowledge paired device: {err}");
+            return;
+        }
+    };
+    let device_id = device.device_id.clone();
+    let connection = session.connection.clone();
+    let connection_id = connection.stable_id();
+
+    if let Some(replaced) = state
+        .sessions
+        .lock()
+        .await
+        .insert(device_id.clone(), session)
+    {
+        replaced
+            .connection
+            .close(0u32.into(), b"superseded pairing session");
+    }
+    state
+        .connection_status
+        .lock()
+        .await
+        .insert(device_id.clone(), true);
+    state.current_pairing_token.send_replace(random_token());
+    drop(commit);
+
+    let _ = app.emit("paired-device-connected", &device);
+    update_tray_tooltip(&app, &state).await;
+
+    let monitor_app = app.clone();
+    let monitor_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        connection.closed().await;
+        let removed_current_session = {
+            let mut sessions = monitor_state.sessions.lock().await;
+            let is_current = sessions
+                .get(&device_id)
+                .map(|session| session.connection.stable_id() == connection_id)
+                .unwrap_or(false);
+            if is_current {
+                sessions.remove(&device_id);
+            }
+            is_current
         };
 
-        match result {
-            Ok((device, _session)) => {
-                if let Err(err) = state.store.lock().await.upsert(&device) {
-                    eprintln!("cosync: failed to persist paired device: {err}");
-                    continue;
-                }
-                state
-                    .connection_status
-                    .lock()
-                    .await
-                    .insert(device.device_id.clone(), true);
-
-                let _ = app.emit("paired-device-connected", &device);
-                update_tray_tooltip(&app, &state).await;
-                state.current_pairing_token.send_replace(random_token());
-            }
-            Err(err) => {
-                // Timeout, token mismatch, or a dropped connection —
-                // none of these should kill the listener. Just try again.
-                eprintln!("cosync: pairing attempt did not complete: {err}");
-            }
+        if removed_current_session {
+            monitor_state
+                .connection_status
+                .lock()
+                .await
+                .insert(device_id.clone(), false);
+            let _ = monitor_app.emit("paired-device-disconnected", &device_id);
+            update_tray_tooltip(&monitor_app, &monitor_state).await;
         }
-    }
+    });
 }
 
 async fn update_tray_tooltip(app: &tauri::AppHandle, state: &Arc<AppState>) {
@@ -226,8 +324,8 @@ pub fn run() {
                 .expect("open paired-device store");
 
             // Reserve the fixed listener port before QR generation. The
-            // pairing endpoint is rebuilt per attempt, but it always binds
-            // this same port so local firewall rules can stay narrowly scoped.
+            // listener creates one long-lived endpoint on this address so
+            // local firewall rules can stay narrowly scoped.
             let probe = std::net::UdpSocket::bind(("0.0.0.0", PAIRING_PORT))
                 .expect("bind fixed pairing port");
             let pairing_addr = probe.local_addr().expect("pairing addr");
@@ -241,6 +339,8 @@ pub fn run() {
                 pairing_addr,
                 current_pairing_token,
                 connection_status: AsyncMutex::new(HashMap::new()),
+                sessions: AsyncMutex::new(HashMap::new()),
+                pairing_commit: AsyncMutex::new(()),
             });
             app.manage(state.clone());
 

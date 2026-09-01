@@ -2,10 +2,9 @@
 //!
 //! Every device (phone or desktop) has exactly one long-lived Ed25519
 //! keypair, generated once on first run and persisted locally. The
-//! public key's fingerprint (a SHA-256 hash, hex-encoded) is what gets
-//! embedded in the pairing QR code and pinned by the peer — see
-//! Milestone 2. There is no CA involved; this is a closed pairwise trust
-//! model (see ADR-003 for why).
+//! public key can sign application-level messages independently of the TLS
+//! certificate used for transport trust. There is no CA involved; see
+//! ADR-005 for why certificate and application identities are separate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -100,9 +99,8 @@ impl DeviceIdentity {
         public_key.verify(message, &signature).is_ok()
     }
 
-    /// The value that gets embedded in the pairing QR code and pinned by
-    /// the peer as this device's trust anchor: SHA-256 of the raw public
-    /// key, hex-encoded.
+    /// Stable SHA-256 fingerprint of the application-signing public key.
+    /// Transport trust uses `DeviceCertificate::fingerprint()` instead.
     pub fn fingerprint(&self) -> String {
         fingerprint_of(&self.verifying_key())
     }

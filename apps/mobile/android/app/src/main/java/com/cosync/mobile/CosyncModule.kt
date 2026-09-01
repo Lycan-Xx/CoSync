@@ -8,13 +8,16 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicLong
 import uniffi.cosync_mobile.ConnectionClient
 
 class CosyncBridgeModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
-  private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+  private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+  private val connectionMonitor: ExecutorService = Executors.newSingleThreadExecutor()
+  private val monitorGeneration = AtomicLong()
   private val client by lazy { ConnectionClient(context.filesDir.resolve("cosync").absolutePath) }
   private var multicastLock: WifiManager.MulticastLock? = null
   private var lastStatus: Boolean? = null
@@ -32,14 +35,19 @@ class CosyncBridgeModule(private val context: ReactApplicationContext) : ReactCo
             context,
             CosyncForegroundService.intent(context)
           )
-          startStatusPolling()
-        } else {
+          startStatusMonitor()
+        } else if (!client.isConnected()) {
           releaseMulticastLock()
+          context.stopService(CosyncForegroundService.intent(context))
         }
         promise.resolve(result)
-        emitStatus(result == "connected")
+        emitStatus(client.isConnected())
       } catch (error: Exception) {
-        releaseMulticastLock()
+        if (!client.isConnected()) {
+          releaseMulticastLock()
+          context.stopService(CosyncForegroundService.intent(context))
+          emitStatus(false)
+        }
         promise.reject("PAIRING_FAILED", error.message, error)
       }
     }
@@ -58,6 +66,7 @@ class CosyncBridgeModule(private val context: ReactApplicationContext) : ReactCo
   @ReactMethod
   fun disconnect(promise: Promise) {
     executor.execute {
+      monitorGeneration.incrementAndGet()
       client.disconnect()
       releaseMulticastLock()
       context.stopService(CosyncForegroundService.intent(context))
@@ -67,14 +76,36 @@ class CosyncBridgeModule(private val context: ReactApplicationContext) : ReactCo
   }
 
   override fun invalidate() {
+    monitorGeneration.incrementAndGet()
     client.disconnect()
     releaseMulticastLock()
+    context.stopService(CosyncForegroundService.intent(context))
+    connectionMonitor.shutdownNow()
     executor.shutdownNow()
     super.invalidate()
   }
 
-  private fun startStatusPolling() {
-    executor.scheduleAtFixedRate({ emitStatus(client.isConnected()) }, 0, 1, TimeUnit.SECONDS)
+  private fun startStatusMonitor() {
+    val generation = monitorGeneration.incrementAndGet()
+    try {
+      connectionMonitor.execute {
+        client.waitForDisconnect()
+        try {
+          executor.execute disconnectEvent@{
+            if (monitorGeneration.get() != generation || client.isConnected()) {
+              return@disconnectEvent
+            }
+            releaseMulticastLock()
+            context.stopService(CosyncForegroundService.intent(context))
+            emitStatus(false)
+          }
+        } catch (_: RejectedExecutionException) {
+          // React Native is already tearing down this module.
+        }
+      }
+    } catch (_: RejectedExecutionException) {
+      // React Native is already tearing down this module.
+    }
   }
 
   private fun emitStatus(connected: Boolean) {

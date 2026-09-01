@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairingPayload {
     pub device_name: String,
-    /// SHA-256 hex fingerprint of the advertising device's public key —
-    /// see `identity::DeviceIdentity::fingerprint()`. This is what the
-    /// scanning device pins as the trust anchor for this peer.
+    /// SHA-256 hex fingerprint of the advertising device's TLS certificate —
+    /// see `cert::DeviceCertificate::fingerprint()`. This is what the scanning
+    /// device pins as the trust anchor for this peer (ADR-005).
     pub public_key_fingerprint: String,
     /// Best-effort IP hint so the scanning device can dial directly
     /// instead of waiting for mDNS discovery to find it independently.

@@ -7,8 +7,8 @@
 //! yet; that starts in Milestone 2.
 
 pub mod cert;
-pub mod discovery;
 pub mod diagnostics;
+pub mod discovery;
 pub mod framing;
 pub mod hlc;
 pub mod identity;
@@ -34,13 +34,16 @@ pub mod proto {
 }
 
 pub use cert::DeviceCertificate;
-pub use discovery::{Discovery, DiscoveredPeer};
+pub use discovery::{DiscoveredPeer, Discovery};
 pub use hlc::{should_apply_update, HlcTimestamp, HybridLogicalClock};
 pub use identity::{default_app_data_dir, DeviceIdentity, IdentityError};
 pub use paired_devices::{PairedDevice, PairedDeviceStore};
 pub use pairing::PairingPayload;
-pub use pairing_session::{accept_pairing_connection, dial_and_send_pairing_request, PairingError};
-pub use transport::Session;
+pub use pairing_session::{
+    accept_pairing_connection, accept_pairing_incoming, dial_and_send_pairing_request,
+    read_pairing_ack, PairingError, PendingPairing,
+};
+pub use transport::{build_pairing_server_endpoint, Session};
 
 #[cfg(test)]
 mod envelope_tests {

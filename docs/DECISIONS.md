@@ -113,6 +113,12 @@ traits, which operate on certificates, not raw keys. `DeviceIdentity`
 that isn't the TLS layer itself; `DeviceCertificate` is a separate,
 purpose-built identity for the transport.
 
+Until an application-level identity is explicitly signed and bound to that
+certificate, paired-device and live-session keys use the authenticated
+certificate fingerprint. Device IDs supplied inside a pairing request are not
+trusted as identity because the request can otherwise collide with an existing
+paired-device record.
+
 **Real bug this caught:** while testing this, a test asserting "an
 unpinned client certificate must be rejected" initially appeared to
 fail — the attacker's connection looked accepted. It wasn't a security
@@ -135,6 +141,11 @@ succeed?" check that doesn't account for it.
 installer runs per-machine and adds a firewall exception restricted to the
 installed CoSync executable, that UDP port, Private profiles, and the local
 subnet. The uninstaller removes the rule.
+
+The rule is configured in the NSIS pre-install hook, before application files,
+registry keys, or shortcuts are written. Upgrades update an existing rule in
+place and only fall back to adding it when no rule exists; they never delete a
+working rule before its replacement has succeeded.
 
 **Measured justification:** On the primary Windows development host, all
 Windows Firewall profiles block inbound traffic by default and no CoSync rule

@@ -66,7 +66,20 @@ impl PairedDeviceStore {
     /// IP changed since the last connection — the fingerprint is what
     /// actually identifies the device, not the address).
     pub fn upsert(&self, device: &PairedDevice) -> Result<(), StoreError> {
-        self.conn.execute(
+        let transaction = self.conn.unchecked_transaction()?;
+
+        // ADR-005 now uses the authenticated certificate fingerprint as the
+        // device key. Remove a legacy application-identity row for the same
+        // certificate during re-pairing so upgrades do not show duplicates.
+        if device.device_id == device.cert_fingerprint {
+            transaction.execute(
+                "DELETE FROM paired_devices
+                 WHERE cert_fingerprint = ?1 AND device_id <> ?2",
+                rusqlite::params![device.cert_fingerprint, device.device_id],
+            )?;
+        }
+
+        transaction.execute(
             "INSERT INTO paired_devices (device_id, device_name, cert_fingerprint, last_known_ip, last_known_port)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(device_id) DO UPDATE SET
@@ -82,6 +95,7 @@ impl PairedDeviceStore {
                 device.last_known_port,
             ],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -170,6 +184,26 @@ mod tests {
         assert_eq!(store.list_all().expect("list").len(), 1);
         let loaded = store.get("device-1").expect("get").expect("present");
         assert_eq!(loaded.last_known_ip, Some("10.0.0.5".to_string()));
+    }
+
+    #[test]
+    fn certificate_keyed_upsert_replaces_a_legacy_identity_row() {
+        let store = PairedDeviceStore::open_in_memory().expect("open");
+        let certificate_fingerprint = "cd".repeat(32);
+        let mut legacy = sample("legacy-application-identity");
+        legacy.cert_fingerprint = certificate_fingerprint.clone();
+        store.upsert(&legacy).expect("legacy upsert");
+
+        let mut certificate_keyed = legacy.clone();
+        certificate_keyed.device_id = certificate_fingerprint;
+        store
+            .upsert(&certificate_keyed)
+            .expect("certificate-keyed upsert");
+
+        assert_eq!(
+            store.list_all().expect("list"),
+            vec![certificate_keyed]
+        );
     }
 
     #[test]

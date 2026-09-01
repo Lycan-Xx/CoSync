@@ -50,8 +50,13 @@ function DeviceListScreen({ onPair }: { onPair: () => void }) {
     let active = true;
     const refresh = () => invoke<PairedDevice[]>("list_paired_devices").then((next) => active && setDevices(next)).catch((reason) => active && setError(String(reason)));
     refresh();
-    const unlisten = listen("paired-device-connected", refresh);
-    return () => { active = false; void unlisten.then((dispose) => dispose()); };
+    const connectedListener = listen("paired-device-connected", refresh);
+    const disconnectedListener = listen("paired-device-disconnected", refresh);
+    return () => {
+      active = false;
+      void connectedListener.then((dispose) => dispose());
+      void disconnectedListener.then((dispose) => dispose());
+    };
   }, []);
 
   return <main className="devices-screen">

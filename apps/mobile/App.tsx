@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { Button, StyleSheet, Text, View } from 'react-native';
+import { Button, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { cosyncNative } from './src/native/cosync';
 
@@ -35,12 +35,22 @@ export default function App() {
       barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
       onBarcodeScanned={scanned ? undefined : async ({ data }) => {
         setScanned(true);
-        const result = await cosyncNative.pair(data, 'Android device');
+        let result: string;
+        try {
+          result = await cosyncNative.pair(data, 'Android device');
+        } catch (error) {
+          result = `pairing failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
         if (result === 'connected') {
           setStatus('Connected to desktop.');
           return;
         }
-        const diagnostics = await cosyncNative.recentDiagnostics();
+        let diagnostics = '';
+        try {
+          diagnostics = await cosyncNative.recentDiagnostics();
+        } catch (error) {
+          diagnostics = `Unable to read diagnostics: ${error instanceof Error ? error.message : String(error)}`;
+        }
         const message = result === 'native bridge unavailable'
           ? 'Native Cosync bridge is unavailable in this build.'
           : result;
@@ -48,7 +58,9 @@ export default function App() {
       }} />
     <View style={styles.overlay}>
       <Text style={styles.title}>Pair with desktop</Text>
-      <Text style={styles.body}>{status}</Text>
+      <ScrollView style={styles.statusScroll} contentContainerStyle={styles.statusContent} nestedScrollEnabled>
+        <Text style={styles.body}>{status}</Text>
+      </ScrollView>
       {scanned && <Button title="Scan another code" onPress={() => { setScanned(false); setStatus('Scan a Cosync pairing QR code.'); }} />}
     </View>
     <StatusBar style="light" />
@@ -58,7 +70,9 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#101522' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24, backgroundColor: '#101522' },
-  overlay: { marginTop: 72, marginHorizontal: 24, padding: 20, borderRadius: 16, backgroundColor: 'rgba(16,21,34,0.86)' },
+  overlay: { maxHeight: '82%', marginTop: 72, marginHorizontal: 24, padding: 20, borderRadius: 16, backgroundColor: 'rgba(16,21,34,0.86)' },
+  statusScroll: { flexShrink: 1, marginBottom: 12 },
+  statusContent: { paddingBottom: 4 },
   title: { color: '#fff', fontSize: 24, fontWeight: '700', marginBottom: 8 },
   body: { color: '#d8deec', fontSize: 16, lineHeight: 23 },
 });
