@@ -15,7 +15,7 @@ notification mirroring, quick replies from the desktop, and (further out)
 using your phone's camera as a PC webcam — all over a direct, encrypted,
 device-to-device connection.
 
-## Philosoph
+## Philosophy
 
 Cosync should not look like just another application that manages device synchronization. It should make device synchronization feel like part of the operating system.
 
@@ -25,7 +25,18 @@ real demand shows up. macOS is intentionally out of scope — see
 
 ## Status
 
-Milestone 0 (repo scaffolding) is complete. See:
+Early development (v0.1.0), built in human-gated vertical slices.
+
+- Milestones 0-2 (scaffolding, protocol and data model, discovery and
+  secure pairing core): complete.
+- Milestone 3 (desktop tray, QR pairing, and device UI): complete.
+- Milestone 4A (Android pairing and persistent connection): implemented,
+  including trusted-session persistence and reconnect. Its human
+  acceptance gate has not been recorded yet.
+- Milestone 5 onward (clipboard handoff and history, file transfer,
+  settings, notifications): not started.
+
+See:
 - [`docs/SPEC.md`](docs/SPEC.md) — the full phased development spec
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — architecture decisions and why
 
