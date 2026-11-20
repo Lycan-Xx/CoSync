@@ -12,3 +12,10 @@
 -keep class com.facebook.react.turbomodule.** { *; }
 
 # Add any project specific keep options here:
+
+# UniFFI-generated Kotlin bindings call into libcosync_core.so through JNA,
+# which resolves classes, fields and callbacks reflectively.
+-keep class uniffi.** { *; }
+-keep class com.sun.jna.** { *; }
+-keep class * implements com.sun.jna.** { *; }
+-dontwarn java.awt.*
