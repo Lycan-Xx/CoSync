@@ -10,3 +10,12 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+
+# Size-optimised release builds (Android APK, desktop bundles).
+# panic = "abort" is intentionally NOT set: UniFFI relies on unwinding to
+# turn Rust panics into Kotlin exceptions instead of killing the app.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
